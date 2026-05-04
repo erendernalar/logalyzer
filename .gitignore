@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# IDE / editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs — don't commit actual flight log files
+logs/
+*.BIN
+*.bin
+*.log
+*.tlog
+
+# Temporary HTML files generated at runtime
+app/assets/_*.html
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,7 @@
+pymavlink>=2.4.43
+PyQt5>=5.15.0
+PyQtWebEngine>=5.15.0
+pyqtgraph>=0.13.3
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
