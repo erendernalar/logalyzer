@@ -1,6 +1,8 @@
 import importlib
 import pkgutil
+import sys
 import app.modules as _modules_pkg
+from app.modules import FROZEN_MODULES
 from app.modules.base_module import BaseModule
 
 
@@ -19,7 +21,12 @@ class ModuleRegistry:
         pkg_path = _modules_pkg.__path__
         pkg_name = _modules_pkg.__name__
 
-        for finder, subpkg_name, ispkg in pkgutil.iter_modules(pkg_path):
+        if getattr(sys, 'frozen', False):
+            candidates = ((None, name, True) for name in FROZEN_MODULES)
+        else:
+            candidates = pkgutil.iter_modules(pkg_path)
+
+        for finder, subpkg_name, ispkg in candidates:
             if not ispkg:
                 continue
             module_file = f"{pkg_name}.{subpkg_name}.module"
