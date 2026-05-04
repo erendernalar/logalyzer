@@ -108,7 +108,7 @@ class VibrationAnalyzerModule(BaseModule):
     MODULE_ID    = "vibration_analyzer"
     DISPLAY_NAME = "Vibration Analyzer"
     DESCRIPTION  = "Analyze IMU vibration levels and frequency spectrum"
-    ICON_CHAR    = "〜"
+    ICON_CHAR    = "∿"
     REQUIRED_MESSAGES = ["VIBE", "IMU"]
 
     def __init__(self):
