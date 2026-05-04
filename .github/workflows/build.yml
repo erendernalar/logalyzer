@@ -27,6 +27,12 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pyinstaller-hooks-contrib Pillow
 
+      - name: Inject version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          (Get-Content app/version.py) -replace '"dev"', "`"$version`"" | Set-Content app/version.py
+
       - name: Build with PyInstaller
         run: pyinstaller logalyzer.spec
 
