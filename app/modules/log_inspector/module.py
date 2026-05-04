@@ -1019,11 +1019,14 @@ function loadSTL(inp){
   inp.value='';
 }
 
-// ── Full flight path (tube, mode-colored) ─────────────────
-// WebGL ignores linewidth > 1, so we use TubeGeometry for a visible thick track.
-(function(){
-  const TUBE_R  = 1.2;  // tube radius in metres
-  const SEG_MAX = 250;  // max curve points per colour segment
+// ── Flight path tube — single system, rebuilt on selection ─
+const PATH_TUBE_R = 0.5;
+let pathMeshes = [];
+
+function buildPathTubes(fromIdx, toIdx){
+  pathMeshes.forEach(function(m){ m.geometry.dispose(); scene.remove(m); });
+  pathMeshes = [];
+  const SEG_MAX = 250;
   function sameCol(a,b){
     return PATH_COLORS[a][0]===PATH_COLORS[b][0] &&
            PATH_COLORS[a][1]===PATH_COLORS[b][1] &&
@@ -1031,9 +1034,9 @@ function loadSTL(inp){
   }
   function addTube(from, to){
     if(to-from < 2) return;
-    const step = Math.max(1, Math.floor((to-from)/SEG_MAX));
+    const step=Math.max(1,Math.floor((to-from)/SEG_MAX));
     const pts=[];
-    for(let j=from; j<to; j+=step)
+    for(let j=from;j<to;j+=step)
       pts.push(new THREE.Vector3(PTS[j][0],PTS[j][1],PTS[j][2]));
     const last=to-1;
     const lp=pts[pts.length-1];
@@ -1044,22 +1047,20 @@ function loadSTL(inp){
       const curve=new THREE.CatmullRomCurve3(pts);
       const r=PATH_COLORS[from];
       const col=new THREE.Color(r[0]*0.85,r[1]*0.85,r[2]*0.85);
-      const geom=new THREE.TubeGeometry(curve,pts.length*2,TUBE_R,5,false);
-      scene.add(new THREE.Mesh(geom,new THREE.MeshBasicMaterial({color:col})));
+      const geom=new THREE.TubeGeometry(curve,pts.length*2,PATH_TUBE_R,5,false);
+      const mesh=new THREE.Mesh(geom,new THREE.MeshBasicMaterial({color:col}));
+      scene.add(mesh);
+      pathMeshes.push(mesh);
     }catch(e){}
   }
-  let segStart=0;
-  for(let i=1;i<=N_PTS;i++){
-    if(i===N_PTS||!sameCol(i,segStart)){ addTube(segStart,i); segStart=i; }
+  let segStart=fromIdx;
+  for(let i=fromIdx+1;i<=toIdx;i++){
+    if(i===toIdx||!sameCol(i,segStart)){ addTube(segStart,i); segStart=i; }
   }
-})();
+}
 
-// ── Selection highlight (orange) ──────────────────────────
-const selPositions = new Float32Array(N_PTS*3);
-const selGeom = new THREE.BufferGeometry();
-selGeom.setAttribute('position', new THREE.BufferAttribute(selPositions, 3));
-selGeom.setDrawRange(0, 0);
-scene.add(new THREE.Line(selGeom, new THREE.LineBasicMaterial({color:0xF0883E})));
+// Build full path on load
+buildPathTubes(0, N_PTS);
 
 // ── Trail (white, grows during playback) ──────────────────
 const trailPositions = new Float32Array(N_PTS*3);
@@ -1075,20 +1076,7 @@ let trailLastIdx=-1;
 let lastTitlePush=0, lastTitleVal=NaN;
 
 function updateSelection(t0, t1){
-  // Update orange segment
-  let count=0;
-  for(let i=0;i<N_PTS;i++){
-    if(TIMES[i]>=t0 && TIMES[i]<=t1){
-      selPositions[count*3]=PTS[i][0];
-      selPositions[count*3+1]=PTS[i][1];
-      selPositions[count*3+2]=PTS[i][2];
-      count++;
-    }
-  }
-  selGeom.attributes.position.needsUpdate=true;
-  selGeom.setDrawRange(0, count);
-
-  // Update playback bounds
+  // Find index range for selection
   let ns=-1, ne=-1;
   for(let i=0;i<N_PTS;i++){
     if(TIMES[i]>=t0 && ns===-1) ns=i;
@@ -1096,6 +1084,9 @@ function updateSelection(t0, t1){
   }
   SEL_START = ns<0 ? 0 : ns;
   SEL_END   = ne<SEL_START ? SEL_START : ne;
+
+  // Rebuild path tube for selected range only
+  buildPathTubes(SEL_START, SEL_END+1);
 
   // Reset playback to selection start
   playing=false; updatePBtn();
@@ -1106,15 +1097,15 @@ function updateSelection(t0, t1){
   trailGeom.setDrawRange(0, 1);
 
   // Fit free camera to selection
-  if(camMode==='free' && count>=2){
-    let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity,sumY=0;
-    for(let i=0;i<count;i++){
-      const x=selPositions[i*3],y=selPositions[i*3+1],z=selPositions[i*3+2];
-      if(x<minX) minX=x; if(x>maxX) maxX=x;
-      if(z<minZ) minZ=z; if(z>maxZ) maxZ=z;
-      sumY+=y;
+  if(camMode==='free' && SEL_END>SEL_START){
+    let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity,sumY=0,cnt=0;
+    for(let i=SEL_START;i<=SEL_END;i++){
+      const p=PTS[i];
+      if(p[0]<minX) minX=p[0]; if(p[0]>maxX) maxX=p[0];
+      if(p[2]<minZ) minZ=p[2]; if(p[2]>maxZ) maxZ=p[2];
+      sumY+=p[1]; cnt++;
     }
-    orbTarget.set((minX+maxX)/2, sumY/count, (minZ+maxZ)/2);
+    orbTarget.set((minX+maxX)/2, sumY/cnt, (minZ+maxZ)/2);
     const span=Math.max(maxX-minX, maxZ-minZ, 30);
     orbRadius=span*1.5;
   }
