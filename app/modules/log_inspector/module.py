@@ -1019,18 +1019,39 @@ function loadSTL(inp){
   inp.value='';
 }
 
-// ── Full flight path (dim, mode-colored) ──────────────────
+// ── Full flight path (tube, mode-colored) ─────────────────
+// WebGL ignores linewidth > 1, so we use TubeGeometry for a visible thick track.
 (function(){
-  const pos=new Float32Array(N_PTS*3);
-  const col=new Float32Array(N_PTS*3);
-  for(let i=0;i<N_PTS;i++){
-    pos[i*3]=PTS[i][0]; pos[i*3+1]=PTS[i][1]; pos[i*3+2]=PTS[i][2];
-    col[i*3]=PATH_COLORS[i][0]*0.7; col[i*3+1]=PATH_COLORS[i][1]*0.7; col[i*3+2]=PATH_COLORS[i][2]*0.7;
+  const TUBE_R  = 1.2;  // tube radius in metres
+  const SEG_MAX = 250;  // max curve points per colour segment
+  function sameCol(a,b){
+    return PATH_COLORS[a][0]===PATH_COLORS[b][0] &&
+           PATH_COLORS[a][1]===PATH_COLORS[b][1] &&
+           PATH_COLORS[a][2]===PATH_COLORS[b][2];
   }
-  const g=new THREE.BufferGeometry();
-  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
-  g.setAttribute('color',new THREE.BufferAttribute(col,3));
-  scene.add(new THREE.Line(g,new THREE.LineBasicMaterial({vertexColors:true})));
+  function addTube(from, to){
+    if(to-from < 2) return;
+    const step = Math.max(1, Math.floor((to-from)/SEG_MAX));
+    const pts=[];
+    for(let j=from; j<to; j+=step)
+      pts.push(new THREE.Vector3(PTS[j][0],PTS[j][1],PTS[j][2]));
+    const last=to-1;
+    const lp=pts[pts.length-1];
+    if(lp.x!==PTS[last][0]||lp.y!==PTS[last][1]||lp.z!==PTS[last][2])
+      pts.push(new THREE.Vector3(PTS[last][0],PTS[last][1],PTS[last][2]));
+    if(pts.length<2) return;
+    try{
+      const curve=new THREE.CatmullRomCurve3(pts);
+      const r=PATH_COLORS[from];
+      const col=new THREE.Color(r[0]*0.85,r[1]*0.85,r[2]*0.85);
+      const geom=new THREE.TubeGeometry(curve,pts.length*2,TUBE_R,5,false);
+      scene.add(new THREE.Mesh(geom,new THREE.MeshBasicMaterial({color:col})));
+    }catch(e){}
+  }
+  let segStart=0;
+  for(let i=1;i<=N_PTS;i++){
+    if(i===N_PTS||!sameCol(i,segStart)){ addTube(segStart,i); segStart=i; }
+  }
 })();
 
 // ── Selection highlight (orange) ──────────────────────────
