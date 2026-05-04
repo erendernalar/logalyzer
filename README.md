@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python">
   <img src="https://img.shields.io/badge/PyQt5-5.15%2B-green" alt="PyQt5">
-  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
+  <img src="https://img.shields.io/badge/license-NC--OSL-orange" alt="License">
 </p>
 
 ---
@@ -181,4 +181,12 @@ Logs from **ArduPlane**, **ArduCopter**, **ArduRover**, and **VTOL** (QuadPlane)
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+This project is released under a **Non-Commercial Open Source License**.
+
+- **Free to use** for personal, educational, and open-source projects
+- **Commercial use is prohibited** — you may not sell, license, or use this software in any revenue-generating product or service without written permission
+- **Copyleft** — any modified or derivative work must be distributed under the same license with full source code made publicly available
+- **Attribution required** — credit must be given to the original author
+
+See [LICENSE](LICENSE) for the full terms.
+For commercial licensing, contact: erendernalar@gmail.com

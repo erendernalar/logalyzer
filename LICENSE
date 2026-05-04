@@ -1,21 +1,38 @@
-MIT License
-
+Non-Commercial Open Source License
 Copyright (c) 2025 Eren Dernalar
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+of this software and associated documentation files (the "Software"), to use,
+copy, modify, and distribute the Software for NON-COMMERCIAL purposes only,
+subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. NON-COMMERCIAL USE ONLY
+   The Software may not be used, in whole or in part, for any commercial
+   purpose. Commercial purpose includes, but is not limited to:
+   - Selling or licensing the Software or any derivative work
+   - Using the Software in a product or service that generates revenue
+   - Using the Software internally in a for-profit organization
+   - Incorporating the Software into proprietary or commercial software
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. OPEN SOURCE REQUIREMENT (COPYLEFT)
+   Any modified version of the Software, or any software that incorporates
+   a substantial portion of the Software, must be distributed under the
+   same terms as this license. The full corresponding source code must be
+   made publicly available at no charge.
+
+3. ATTRIBUTION
+   All copies or substantial portions of the Software must include this
+   license and the following attribution in a visible location (e.g.,
+   documentation, About dialog, or source file headers):
+
+       Based on Logalyzer by Eren Dernalar
+       https://github.com/your-username/logalyzer
+
+4. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+For commercial licensing inquiries, contact: erendernalar@gmail.com
