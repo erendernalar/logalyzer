@@ -4,17 +4,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
-# Collect all pymavlink dialects data
 datas = []
 datas += collect_data_files('pymavlink')
 datas += collect_data_files('pyqtgraph')
-
-# Bundle all app assets
 datas += [('app/assets', 'app/assets')]
 
-# Collect all module subpackages so the plugin system finds them at runtime
 hiddenimports = []
-hiddenimports += collect_submodules('app.modules')
 hiddenimports += collect_submodules('pyqtgraph')
 hiddenimports += [
     'PyQt5.QtWebEngineWidgets',
