@@ -50,7 +50,7 @@ class SidebarWidget(QWidget):
             f"QListWidget::item:selected {{ background-color: {COLORS['bg_tertiary']}; color: {COLORS['text_primary']}; border-left: 3px solid {COLORS['accent']}; }}"
             f"QListWidget::item:disabled {{ color: {COLORS['text_disabled']}; }}"
         )
-        self._list.currentRowChanged.connect(self._on_row_changed)
+        self._list.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self._list, 1)
 
         # ── Divider ───────────────────────────────────────────
@@ -69,6 +69,7 @@ class SidebarWidget(QWidget):
 
     def populate(self, module_classes: list):
         """Fill list from registered module classes. Called once at startup."""
+        self._list.blockSignals(True)
         self._list.clear()
         self._module_ids.clear()
         self._standalone.clear()
@@ -81,6 +82,8 @@ class SidebarWidget(QWidget):
             self._list.addItem(item)
             self._module_ids.append(cls.MODULE_ID)
             self._standalone.append(not cls.REQUIRED_MESSAGES)
+        self._list.setCurrentRow(-1)
+        self._list.blockSignals(False)
         self._set_enabled(False)
 
     def set_log_loaded(self, log_data):
@@ -106,6 +109,7 @@ class SidebarWidget(QWidget):
                 item.setFlags(flags & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
         self._list.blockSignals(False)
 
-    def _on_row_changed(self, row: int):
+    def _on_item_clicked(self, item):
+        row = self._list.row(item)
         if 0 <= row < len(self._module_ids):
             self.module_selected.emit(self._module_ids[row])
