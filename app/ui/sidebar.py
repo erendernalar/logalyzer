@@ -86,8 +86,6 @@ class SidebarWidget(QWidget):
     def set_log_loaded(self, log_data):
         self._set_enabled(True)
         self._info.update_from_log(log_data)
-        if self._list.count() > 0:
-            self._list.setCurrentRow(0)
 
     def clear_log(self):
         self._set_enabled(False)

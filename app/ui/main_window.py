@@ -166,6 +166,7 @@ class MainWindow(QMainWindow):
 
         self._content.reload_all(log_data, self._registry)
         self._sidebar.set_log_loaded(log_data)
+        self._content.show_welcome()
 
     def _on_load_error(self, msg: str):
         self._content.show_welcome()
