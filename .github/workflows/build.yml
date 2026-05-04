@@ -36,14 +36,20 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller logalyzer.spec
 
+      - name: Rename exe with version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          Rename-Item dist/Logalyzer.exe "Logalyzer-$version.exe"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Logalyzer-windows
-          path: dist/Logalyzer.exe
+          name: Logalyzer-${{ github.ref_name }}-windows
+          path: dist/Logalyzer-${{ github.ref_name }}.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Logalyzer.exe
+          files: dist/Logalyzer-${{ github.ref_name }}.exe
           generate_release_notes: true

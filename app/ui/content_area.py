@@ -18,6 +18,7 @@ class ContentArea(QStackedWidget):
         self.addWidget(self._welcome)   # index 0
         self.addWidget(self._loading)   # index 1
         self._id_to_index: dict = {}
+        self._loaded_for: dict = {}     # module_id -> log_data it was last loaded with
 
     @property
     def welcome(self) -> WelcomeWidget:
@@ -35,27 +36,25 @@ class ContentArea(QStackedWidget):
         self.setCurrentIndex(1)
 
     def show_module(self, module_id: str, module_instance, log_data=None):
-        first_build = module_id not in self._id_to_index
-        if first_build:
+        if module_id not in self._id_to_index:
             widget = module_instance.build_widget()
-            idx = self.addWidget(widget)
-            self._id_to_index[module_id] = idx
+            self._id_to_index[module_id] = self.addWidget(widget)
 
         self.setCurrentIndex(self._id_to_index[module_id])
 
-        # Load data AFTER the widget is visible so pyqtgraph plots are fully initialised
-        if first_build and log_data is not None:
+        # Reload data whenever the log has changed since the last load for this module
+        if log_data is not None and self._loaded_for.get(module_id) is not log_data:
+            self._loaded_for[module_id] = log_data
             module_instance.load_data(log_data)
 
     def reload_all(self, log_data, registry):
-        for module_id in self._id_to_index:
-            inst = registry.get_instance(module_id)
-            if inst:
-                inst.load_data(log_data)
+        # Invalidate cache so every module reloads on next show
+        self._loaded_for.clear()
 
     def clear_all(self, registry):
         for module_id in self._id_to_index:
             inst = registry.get_instance(module_id)
             if inst:
                 inst.clear()
+        self._loaded_for.clear()
         self.show_welcome()
