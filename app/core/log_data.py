@@ -78,6 +78,9 @@ class LogData:
     baro: dict = field(default_factory=dict)
     # TimeUS, I, Alt, AltAMSL, Press, Temp
 
+    rcin: dict = field(default_factory=dict)
+    # TimeUS, C1..C14
+
     rcou: dict = field(default_factory=dict)
     # TimeUS, C1..C14
 

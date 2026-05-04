@@ -123,6 +123,7 @@ class LogLoader(QThread):
         att_acc  = self._make_acc()
         bat_acc  = self._make_acc()
         baro_acc = self._make_acc()
+        rcin_acc = self._make_acc()
         rcou_acc = self._make_acc()
         arsp_acc = self._make_acc()
         motb_acc = self._make_acc()
@@ -200,6 +201,11 @@ class LogLoader(QThread):
                 self._append(baro_acc, msg,
                     ['TimeUS', 'I', 'Alt', 'AltAMSL', 'Press', 'Temp'])
 
+            elif mtype == 'RCIN':
+                fields = ['TimeUS'] + [f'C{i}' for i in range(1, 15)
+                                       if hasattr(msg, f'C{i}')]
+                self._append(rcin_acc, msg, fields)
+
             elif mtype == 'RCOU':
                 fields = ['TimeUS'] + [f'C{i}' for i in range(1, 15)
                                        if hasattr(msg, f'C{i}')]
@@ -274,6 +280,7 @@ class LogLoader(QThread):
         log.att  = self._to_arrays(att_acc)
         log.bat  = self._to_arrays(bat_acc)
         log.baro = self._to_arrays(baro_acc)
+        log.rcin = self._to_arrays(rcin_acc)
         log.rcou = self._to_arrays(rcou_acc)
         log.arsp = self._to_arrays(arsp_acc)
         log.motb = self._to_arrays(motb_acc)

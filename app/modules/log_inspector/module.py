@@ -33,14 +33,30 @@ _PALETTE = [
 
 # ── Field group definitions ──────────────────────────────────
 _FIELD_GROUPS = [
-    ('Attitude',   'att',  [('Roll', 'Roll °'), ('Pitch', 'Pitch °'), ('Yaw', 'Yaw °')]),
-    ('Altitude',   'pos',  [('RelHomeAlt', 'Rel Home Alt (m)')]),
-    ('Airspeed',   'arsp', [('Airspeed', 'Airspeed (m/s)')]),
-    ('GPS',        'gps',  [('Spd', 'GPS Speed (m/s)'), ('Alt', 'GPS Alt (m)')]),
-    ('Battery',    'bat',  [('Volt', 'Voltage (V)'), ('Curr', 'Current (A)'), ('CurrTot', 'Curr Total (mAh)')]),
-    ('Vibration',  'vibe', [('VibeX', 'Vibe X'), ('VibeY', 'Vibe Y'), ('VibeZ', 'Vibe Z')]),
-    ('RC Output',  'rcou', [('C1', 'Ch 1'), ('C2', 'Ch 2'), ('C3', 'Ch 3'),
-                             ('C4', 'Ch 4'), ('C5', 'Ch 5'), ('C6', 'Ch 6')]),
+    ('Attitude',         'att',  [('Roll', 'Roll °'), ('Pitch', 'Pitch °'), ('Yaw', 'Yaw °')]),
+    ('Desired Attitude', 'att',  [('DesRoll', 'Des Roll °'), ('DesPitch', 'Des Pitch °'), ('DesYaw', 'Des Yaw °')]),
+    ('Altitude',         'pos',  [('RelHomeAlt', 'Rel Home Alt (m)')]),
+    ('Barometer',        'baro', [('Alt', 'Baro Alt (m)'), ('AltAMSL', 'Alt AMSL (m)'), ('Temp', 'Baro Temp (°C)')]),
+    ('Airspeed',         'arsp', [('Airspeed', 'Airspeed (m/s)')]),
+    ('GPS',              'gps',  [('Spd', 'GPS Speed (m/s)'), ('Alt', 'GPS Alt (m)')]),
+    ('GPS Quality',      'gps',  [('NSats', 'Satellites'), ('HDop', 'HDOP')]),
+    ('Battery',          'bat',  [('Volt', 'Voltage (V)'), ('Curr', 'Current (A)'), ('CurrTot', 'Curr Total (mAh)')]),
+    ('Battery %',        'bat',  [('RemPct', 'Remaining (%)'), ('EnrgTot', 'Energy Total (Wh)')]),
+    ('Throttle',         'motb', [('ThrOut', 'Throttle Out (0-1)'), ('ThLimit', 'Thr Limit (0-1)')]),
+    ('Vibration',        'vibe', [('VibeX', 'Vibe X'), ('VibeY', 'Vibe Y'), ('VibeZ', 'Vibe Z')]),
+    ('IMU Accel',        'imu',  [('AccX', 'Accel X (m/s2)'), ('AccY', 'Accel Y (m/s2)'), ('AccZ', 'Accel Z (m/s2)')]),
+    ('IMU Gyro',         'imu',  [('GyrX', 'Gyro X (rad/s)'), ('GyrY', 'Gyro Y (rad/s)'), ('GyrZ', 'Gyro Z (rad/s)')]),
+    ('RC Input',         'rcin', [('C1', 'Ch 1'), ('C2', 'Ch 2'), ('C3', 'Ch 3'),
+                                   ('C4', 'Ch 4'), ('C5', 'Ch 5'), ('C6', 'Ch 6'),
+                                   ('C7', 'Ch 7'), ('C8', 'Ch 8'), ('C9', 'Ch 9'),
+                                   ('C10', 'Ch 10'), ('C11', 'Ch 11'), ('C12', 'Ch 12'),
+                                   ('C13', 'Ch 13'), ('C14', 'Ch 14')]),
+    ('RC Output',        'rcou', [('C1', 'Ch 1'), ('C2', 'Ch 2'), ('C3', 'Ch 3'),
+                                   ('C4', 'Ch 4'), ('C5', 'Ch 5'), ('C6', 'Ch 6'),
+                                   ('C7', 'Ch 7'), ('C8', 'Ch 8'), ('C9', 'Ch 9'),
+                                   ('C10', 'Ch 10'), ('C11', 'Ch 11'), ('C12', 'Ch 12'),
+                                   ('C13', 'Ch 13'), ('C14', 'Ch 14')]),
+    ('VTUN (VTOL)',       'qtun', [('Tilt', 'Tilt °'), ('Dsired', 'Des Tilt °'), ('Ang', 'Ang °'), ('Dist', 'Dist (m)')]),
 ]
 
 
@@ -825,7 +841,7 @@ function loadSTL(inp){
   const col=new Float32Array(N_PTS*3);
   for(let i=0;i<N_PTS;i++){
     pos[i*3]=PTS[i][0]; pos[i*3+1]=PTS[i][1]; pos[i*3+2]=PTS[i][2];
-    col[i*3]=PATH_COLORS[i][0]*0.35; col[i*3+1]=PATH_COLORS[i][1]*0.35; col[i*3+2]=PATH_COLORS[i][2]*0.35;
+    col[i*3]=PATH_COLORS[i][0]*0.7; col[i*3+1]=PATH_COLORS[i][1]*0.7; col[i*3+2]=PATH_COLORS[i][2]*0.7;
   }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.BufferAttribute(pos,3));
