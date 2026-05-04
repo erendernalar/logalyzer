@@ -151,6 +151,8 @@ class LogInspectorModule(BaseModule):
         self._widget    = None
         self._log_data  = None
         self._t0_us     = 0
+        self._hover_vline  = None
+        self._hover_label  = None
         self._plot_items: dict = {}
         self._color_idx: int   = 0
         self._region    = None
@@ -230,6 +232,19 @@ class LogInspectorModule(BaseModule):
         self._plot.scene().sigMouseClicked.connect(self._on_graph_click)
         # Left-drag on the plot defines the selection region directly.
         self._plot.plotItem.vb.mouseDragEvent = self._on_plot_drag
+        self._plot.scene().sigMouseMoved.connect(self._on_mouse_move)
+
+        # Floating tooltip label — parented to the plot viewport so it overlays the graph
+        bg  = COLORS['bg_secondary']
+        brd = COLORS['border']
+        self._hover_label = QLabel(self._plot.viewport())
+        self._hover_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._hover_label.setStyleSheet(
+            f"background-color:{bg}EE; border:1px solid {brd};"
+            f" padding:5px 8px; border-radius:5px;"
+        )
+        self._hover_label.setVisible(False)
+
         right.addWidget(self._plot)
 
         self._view = QWebEngineView()
@@ -323,6 +338,14 @@ class LogInspectorModule(BaseModule):
         self._time_cursor.setZValue(20)
         self._plot.addItem(self._time_cursor)
 
+        self._hover_vline = pg.InfiniteLine(
+            angle=90, movable=False,
+            pen=pg.mkPen(COLORS['text_secondary'], width=1, style=Qt.DashLine),
+        )
+        self._hover_vline.setZValue(15)
+        self._hover_vline.setVisible(False)
+        self._plot.addItem(self._hover_vline)
+
         self._plot.setXRange(0, dur, padding=0.02)
 
         # ── Build 3D view ─────────────────────────────────────
@@ -355,6 +378,9 @@ class LogInspectorModule(BaseModule):
         self._color_idx = 0
         self._region    = None
         self._log_data  = None
+        self._hover_vline = None
+        if self._hover_label:
+            self._hover_label.setVisible(False)
         self._map_ready = False
         if self._view:
             self._view.setHtml(
@@ -635,6 +661,72 @@ const PATH_COLORS={json.dumps([[round(c, 3) for c in rgb] for rgb in colors_rgb]
         self._region.blockSignals(False)
         if ev.isFinish():
             self._on_region_changed()
+
+    # ── Hover tooltip ──────────────────────────────────────
+
+    def _on_mouse_move(self, scene_pos):
+        if self._plot is None or self._hover_label is None:
+            return
+        vb = self._plot.plotItem.vb
+        in_plot = vb.sceneBoundingRect().contains(scene_pos)
+        if not in_plot:
+            if self._hover_vline:
+                self._hover_vline.setVisible(False)
+            self._hover_label.setVisible(False)
+            return
+
+        t = vb.mapSceneToView(scene_pos).x()
+        if self._hover_vline:
+            self._hover_vline.setValue(t)
+            self._hover_vline.setVisible(True)
+
+        if not self._plot_items:
+            self._hover_label.setVisible(False)
+            return
+
+        rows = []
+        for _key, (curve, color) in self._plot_items.items():
+            xd, yd = curve.getData()
+            if xd is None or len(xd) == 0:
+                continue
+            idx = int(np.searchsorted(xd, t))
+            idx = max(0, min(idx, len(xd) - 1))
+            rows.append((color, curve.name() or _key, float(yd[idx])))
+
+        if not rows:
+            self._hover_label.setVisible(False)
+            return
+
+        ts  = COLORS['text_secondary']
+        tp  = COLORS['text_primary']
+        html = (
+            f"<span style='color:{ts};font-size:10px'>t = {t:.2f} s</span>"
+            "<table cellspacing='1' style='margin-top:3px'>"
+            + ''.join(
+                f"<tr>"
+                f"<td><span style='color:{c}'>&#9632;&nbsp;</span></td>"
+                f"<td style='color:{ts};font-size:11px;padding-right:6px'>{n}</td>"
+                f"<td style='color:{tp};font-size:11px'><b>{v:.3f}</b></td>"
+                f"</tr>"
+                for c, n, v in rows
+            )
+            + "</table>"
+        )
+        self._hover_label.setText(html)
+        self._hover_label.adjustSize()
+
+        pt  = self._plot.mapFromScene(scene_pos)
+        vp  = self._plot.viewport()
+        pw, ph = vp.width(), vp.height()
+        lw, lh = self._hover_label.width(), self._hover_label.height()
+        x = pt.x() + 14
+        y = pt.y() - lh // 2
+        if x + lw > pw - 4:
+            x = pt.x() - lw - 14
+        y = max(4, min(y, ph - lh - 4))
+        self._hover_label.move(x, y)
+        self._hover_label.setVisible(True)
+        self._hover_label.raise_()
 
     # ── Region → 3D sync ───────────────────────────────────
 
