@@ -23,7 +23,55 @@ _ASSETS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'
 _TMP_HTML   = os.path.join(_ASSETS_DIR, '_log_inspector.html')
 _TILE_RES   = 64
 
-_Q_MODES = {'QSTABILIZE','QHOVER','QLOITER','QLAND','QRTL','QAUTOTUNE','QACRO','QBRAKE'}
+# ── Per-mode GPS track colors ────────────────────────────────
+_MODE_COLORS = {
+    # ── ArduPlane ──────────────────────────────────────────
+    'MANUAL':       '#E3B341',   # amber
+    'CIRCLE':       '#FF7B72',   # pink
+    'STABILIZE':    '#58A6FF',   # blue
+    'TRAINING':     '#79C0FF',   # light blue
+    'ACRO':         '#FFA657',   # orange
+    'FBWA':         '#58A6FF',   # blue
+    'FBWB':         '#79C0FF',   # light blue
+    'CRUISE':       '#39C5CF',   # cyan
+    'AUTOTUNE':     '#D2A8FF',   # lavender
+    'AUTO':         '#3FB950',   # green
+    'RTL':          '#F85149',   # red
+    'LOITER':       '#FF9F43',   # warm orange
+    'TAKEOFF':      '#56D364',   # bright green
+    'AVOID_ADSB':   '#FF7B72',   # pink
+    'GUIDED':       '#BC8CFF',   # purple
+    'INITIALISING': '#8B949E',   # grey
+    'THERMAL':      '#E3B341',   # amber
+    'LOITER_ALT_QLAND': '#F0883E',
+    # ── Q-modes (VTOL) ────────────────────────────────────
+    'QSTABILIZE':   '#56D364',   # bright green
+    'QHOVER':       '#3FB950',   # green
+    'QLOITER':      '#2EA043',   # dark green
+    'QLAND':        '#F0883E',   # orange
+    'QRTL':         '#F85149',   # red
+    'QAUTOTUNE':    '#D2A8FF',   # lavender
+    'QACRO':        '#BC8CFF',   # purple
+    'QBRAKE':       '#FF7B72',   # pink
+    # ── ArduCopter ────────────────────────────────────────
+    'ALT_HOLD':     '#79C0FF',   # light blue
+    'POSHOLD':      '#39C5CF',   # cyan
+    'LAND':         '#F0883E',   # orange
+    'DRIFT':        '#FFA657',   # orange
+    'SPORT':        '#FF9F43',   # warm orange
+    'FLIP':         '#FF7B72',   # pink
+    'BRAKE':        '#F85149',   # red
+    'THROW':        '#E3B341',   # amber
+    'SMART_RTL':    '#F85149',   # red
+    'FOLLOW':       '#BC8CFF',   # purple
+    'ZIGZAG':       '#39C5CF',   # cyan
+    'SYSTEMID':     '#8B949E',   # grey
+    'AUTOROTATE':   '#D2A8FF',   # lavender
+    'AUTO_RTL':     '#F85149',   # red
+    # ── Fallback ──────────────────────────────────────────
+    'UNKNOWN':      '#8B949E',   # grey
+}
+_DEFAULT_MODE_COLOR = '#8B949E'
 
 # ── Color palette for graph lines ────────────────────────────
 _PALETTE = [
@@ -88,26 +136,41 @@ def _fetch_b64(url):
         return None
 
 
-def _is_q(mode):
-    return mode.upper() in _Q_MODES or mode.upper().startswith('Q')
+def _mode_color(mode_name: str) -> str:
+    return _MODE_COLORS.get(mode_name.upper(), _DEFAULT_MODE_COLOR)
 
 
 def _mode_colors(time_us_arr, events):
-    C_Q, C_FW = '#3FB950', '#58A6FF'
-    colors = [C_FW] * len(time_us_arr)
+    colors = [_DEFAULT_MODE_COLOR] * len(time_us_arr)
     bps = sorted(
-        [(e.time_us, C_Q if _is_q(e.detail.replace('Mode: ', '').strip()) else C_FW)
+        [(e.time_us, _mode_color(e.detail.replace('Mode: ', '').strip()))
          for e in events if e.event_type == 'mode_change'],
         key=lambda x: x[0]
     )
     if not bps:
         return colors
-    bi, cur = 0, C_FW
+    bi, cur = 0, _DEFAULT_MODE_COLOR
     for i, t in enumerate(time_us_arr):
         while bi < len(bps) and bps[bi][0] <= t:
             cur = bps[bi][1]; bi += 1
         colors[i] = cur
     return colors
+
+
+def _legend_items(events) -> list:
+    """Return [[mode_name, hex_color], ...] for each unique mode seen in the flight.
+    Returns an empty list when no mode changes occurred (nothing to show)."""
+    mode_events = [e for e in events if e.event_type == 'mode_change']
+    if not mode_events:
+        return []
+    seen, items = set(), []
+    for e in mode_events:
+        name = e.detail.replace('Mode: ', '').strip()
+        if name not in seen:
+            seen.add(name)
+            items.append([name, _mode_color(name)])
+    # Only show legend when there is actually more than one mode
+    return items if len(items) > 1 else []
 
 
 def _hex_rgb(h):
@@ -502,6 +565,7 @@ class LogInspectorModule(BaseModule):
                     'sw': sw, 'ne': ne,
                 })
 
+        legend = _legend_items(log_data.events)
         data_js = f"""
 const HOME_LAT={home_lat}, HOME_LNG={home_lng};
 const N_PTS={len(pts)};
@@ -516,6 +580,7 @@ const YAWS={json.dumps([round(y, 2) for y in yaws_d])};
 const SPEEDS={json.dumps([round(s, 2) for s in speeds])};
 const MODES={json.dumps(mode_labels)};
 const PATH_COLORS={json.dumps([[round(c, 3) for c in rgb] for rgb in colors_rgb])};
+const LEGEND_ITEMS={json.dumps(legend)};
 """
         return _HTML_TEMPLATE.replace('/*DATA_JS*/', data_js)
 
@@ -760,11 +825,24 @@ body{background:#0D1117;overflow:hidden}
 #tlbl{color:#8B949E;font-size:11px;white-space:nowrap}
 #stl-inp{display:none}
 #hud{position:absolute;top:0;left:0;pointer-events:none;z-index:9;display:none}
+#mode-legend{
+  position:absolute;top:8px;right:8px;z-index:9;
+  background:rgba(13,17,23,0.85);border:1px solid #30363D;
+  border-radius:6px;padding:8px 11px;font-family:monospace;font-size:11px;
+  pointer-events:none;min-width:110px;
+}
+#mode-legend-title{color:#8B949E;font-size:10px;margin-bottom:5px;letter-spacing:.05em}
+.ml-row{display:flex;align-items:center;gap:7px;margin:3px 0}
+.ml-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.ml-name{color:#C9D1D9}
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
 <canvas id="hud"></canvas>
+<div id="mode-legend">
+  <div id="mode-legend-title">FLIGHT MODES</div>
+</div>
 <div id="controls">
   <button class="cb" id="bpl" onclick="togglePlay()">&#9654;</button>
   <button class="cb" onclick="stopPlay()">&#9632;</button>
@@ -803,6 +881,20 @@ body{background:#0D1117;overflow:hidden}
 <script src="STLLoader.js"></script>
 <script>
 /*DATA_JS*/
+
+// ── Mode legend ───────────────────────────────────────────
+(function(){
+  const legend = document.getElementById('mode-legend');
+  if(!LEGEND_ITEMS || LEGEND_ITEMS.length === 0){ legend.style.display='none'; return; }
+  LEGEND_ITEMS.forEach(function([name, color]){
+    const row = document.createElement('div');
+    row.className = 'ml-row';
+    row.innerHTML =
+      '<div class="ml-dot" style="background:'+color+'"></div>' +
+      '<span class="ml-name">'+name+'</span>';
+    legend.appendChild(row);
+  });
+})();
 
 // ── Renderer / Scene / Camera ─────────────────────────────
 const canvas = document.getElementById('canvas');
