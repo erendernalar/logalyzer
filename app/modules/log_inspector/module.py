@@ -23,6 +23,11 @@ _ASSETS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'
 _TMP_HTML   = os.path.join(_ASSETS_DIR, '_log_inspector.html')
 _TILE_RES   = 64
 
+# ── Multi-axis layout columns ────────────────────────────────
+# Extra left axes occupy cols 0 .. (_MAIN_LEFT_COL-1); supports up to 5 extra axes.
+_MAIN_LEFT_COL = 5
+_VB_COL        = 6
+
 # ── Per-mode GPS track colors ────────────────────────────────
 _MODE_COLORS = {
     # ── ArduPlane ──────────────────────────────────────────
@@ -370,10 +375,53 @@ class LogInspectorModule(BaseModule):
         self._legend = self._plot.addLegend(offset=(10, 10))
         self._legend.setBrush(pg.mkBrush(COLORS['bg_secondary'] + 'CC'))
         self._legend.setPen(pg.mkPen(COLORS['border']))
+
+        # Shift the PlotItem layout to make room for extra left-side Y axes.
+        # Default pyqtgraph layout: left=col0, vb=col1, right=col2, bottom=(3,1).
+        # We move everything right so extra axes can occupy cols 0..(_MAIN_LEFT_COL-1).
+        _pi = self._plot.plotItem
+        for _ax_name in ('left', 'right', 'bottom', 'top'):
+            _pi.layout.removeItem(_pi.getAxis(_ax_name))
+        _pi.layout.removeItem(_pi.vb)
+        _pi.layout.addItem(_pi.getAxis('left'),   2, _MAIN_LEFT_COL)
+        _pi.layout.addItem(_pi.vb,                2, _VB_COL)
+        _pi.layout.addItem(_pi.getAxis('right'),  2, _VB_COL + 1)
+        _pi.layout.addItem(_pi.getAxis('bottom'), 3, _VB_COL)
+        _pi.layout.addItem(_pi.getAxis('top'),    1, _VB_COL)
+        # pyqtgraph initialises cols 0-2 with stretch=1 and then sets col1=100.
+        # After moving items to higher columns, zero out the old cols so they
+        # don't compete for space, and give all stretch to the new VB column.
+        for _col in range(_MAIN_LEFT_COL):
+            _pi.layout.setColumnStretchFactor(_col, 0)
+            _pi.layout.setColumnMinimumWidth(_col, 0)
+            _pi.layout.setColumnPreferredWidth(_col, 0)
+        _pi.layout.setColumnStretchFactor(_VB_COL, 100)
+
+        # Patch main ViewBox so Y changes propagate proportionally to extra ViewBoxes.
+        _main_vb = self._plot.plotItem.vb
+
+        _orig_auto_range = _main_vb.autoRange
+        def _patched_auto_range(*args, **kwargs):
+            _orig_auto_range(*args, **kwargs)
+            for _, (_, _, extra_vb, _) in self._plot_items.items():
+                if extra_vb is not None:
+                    extra_vb.autoRange()
+        _main_vb.autoRange = _patched_auto_range
+
+        _orig_wheel = _main_vb.wheelEvent
+        def _patched_wheel(ev, axis=None):
+            y_before = _main_vb.viewRange()[1]
+            _orig_wheel(ev, axis)
+            # axis is not None when called from AxisItem → only move this one curve
+            if axis is None:
+                self._propagate_y_change(y_before, _main_vb.viewRange()[1])
+        _main_vb.wheelEvent = _patched_wheel
+
         self._plot.scene().sigMouseClicked.connect(self._on_graph_click)
         # Left-drag on the plot defines the selection region directly.
         self._plot.plotItem.vb.mouseDragEvent = self._on_plot_drag
         self._plot.scene().sigMouseMoved.connect(self._on_mouse_move)
+        self._plot.plotItem.vb.sigResized.connect(self._update_extra_views)
 
         # Floating tooltip label — parented to the plot viewport so it overlays the graph
         bg  = COLORS['bg_secondary']
@@ -428,9 +476,10 @@ class LogInspectorModule(BaseModule):
         self._t0_us = int(pos['TimeUS'][0])
 
         # ── Rebuild tree ──────────────────────────────────────
+        self._clear_extra_axes()
+        self._plot_items.clear()
         self._tree.blockSignals(True)
         self._tree.clear()
-        self._plot_items.clear()
 
         for group_label, attr, fields in _FIELD_GROUPS:
             msg = getattr(log_data, attr, {})
@@ -517,6 +566,8 @@ class LogInspectorModule(BaseModule):
             self._builder.terminate()
             self._builder.wait()
         if self._plot:
+            self._clear_extra_axes()
+            self._plot_items.clear()
             self._plot.clear()
             self._legend = self._plot.addLegend(offset=(10, 10))
             self._legend.setBrush(pg.mkBrush(COLORS['bg_secondary'] + 'CC'))
@@ -770,20 +821,128 @@ const LEGEND_ITEMS={json.dumps(legend)};
         vals = msg[fk].astype(np.float64)
         color = _PALETTE[self._color_idx % len(_PALETTE)]
         self._color_idx += 1
-        curve = self._plot.plot(t_s, vals, pen=pg.mkPen(color=color, width=1.5),
-                                name=f"{attr.upper()}.{fk}")
-        self._plot_items[key] = (curve, color)
+        name = f"{attr.upper()}.{fk}"
+
+        if len(self._plot_items) == 0:
+            # First curve — use the main left axis
+            curve = self._plot.plot(t_s, vals, pen=pg.mkPen(color=color, width=1.5), name=name)
+            left = self._plot.getAxis('left')
+            left.setPen(pg.mkPen(color=color))
+            try:
+                left.setTextPen(pg.mkPen(color=color))
+            except AttributeError:
+                pass
+            self._plot_items[key] = (curve, color, None, None)
+        else:
+            # Additional curves — create a new ViewBox + right AxisItem
+            pi  = self._plot.plotItem
+            vb  = pg.ViewBox()
+            ax  = pg.AxisItem('left')
+            ax.setPen(pg.mkPen(color=color))
+            try:
+                ax.setTextPen(pg.mkPen(color=color))
+            except AttributeError:
+                pass
+            pi.scene().addItem(vb)
+            ax.linkToView(vb)
+            vb.setXLink(pi.vb)
+            # Pass all mouse events through to the main ViewBox so it handles
+            # panning/zooming; extra curves are Y-controlled via their AxisItems.
+            vb.setAcceptedMouseButtons(Qt.NoButton)
+            vb.enableAutoRange(axis=vb.YAxis, enable=True)
+            curve = pg.PlotDataItem(t_s, vals, pen=pg.mkPen(color=color, width=1.5), name=name)
+            vb.addItem(curve)
+            self._legend.addItem(curve, name)
+            self._plot_items[key] = (curve, color, vb, ax)
+            self._rebuild_extra_axes()
+
         item.setForeground(0, QColor(color))
         self._update_stats_box()
 
     def _remove_plot_line(self, item: QTreeWidgetItem, key: str):
         if key not in self._plot_items:
             return
-        curve, _ = self._plot_items.pop(key)
-        self._plot.removeItem(curve)
-        self._legend.removeItem(curve)
+        curve, _, vb, ax = self._plot_items.pop(key)
+        if vb is None:
+            # Main left-axis curve
+            self._plot.removeItem(curve)
+            self._legend.removeItem(curve)
+            left = self._plot.getAxis('left')
+            left.setPen(pg.mkPen(COLORS['text_secondary']))
+            try:
+                left.setTextPen(pg.mkPen(COLORS['text_secondary']))
+            except AttributeError:
+                pass
+        else:
+            self._plot.plotItem.layout.removeItem(ax)
+            self._plot.plotItem.scene().removeItem(vb)
+            self._legend.removeItem(curve)
+        self._rebuild_extra_axes()
         item.setForeground(0, QColor(COLORS['text_secondary']))
         self._update_stats_box()
+
+    def _rebuild_extra_axes(self):
+        """Reposition all extra left-side axes in the plotItem layout after add/remove."""
+        pi = self._plot.plotItem
+        for _, (_, _, vb, ax) in self._plot_items.items():
+            if ax is not None:
+                pi.layout.removeItem(ax)
+        col = _MAIN_LEFT_COL - 1  # 4, 3, 2, 1, 0 — directly left of main axis
+        for _, (_, _, vb, ax) in self._plot_items.items():
+            if ax is not None:
+                pi.layout.addItem(ax, 2, col)
+                col -= 1
+        self._update_extra_views()
+
+    def _update_extra_views(self):
+        """Sync extra ViewBox geometry to the main ViewBox after resize."""
+        main_vb = self._plot.plotItem.vb
+        for _, (_, _, vb, _) in self._plot_items.items():
+            if vb is not None:
+                vb.setGeometry(main_vb.sceneBoundingRect())
+                vb.linkedViewChanged(main_vb, vb.XAxis)
+
+    def _propagate_y_change(self, y_before, y_after):
+        """Apply the same proportional Y shift/zoom to all extra ViewBoxes."""
+        span_before = y_before[1] - y_before[0]
+        if span_before == 0:
+            return
+        center_before = (y_before[0] + y_before[1]) / 2
+        center_after  = (y_after[0]  + y_after[1])  / 2
+        delta_frac = (center_after - center_before) / span_before
+        scale_frac = (y_after[1] - y_after[0]) / span_before
+        for _, (_, _, vb, _) in self._plot_items.items():
+            if vb is None:
+                continue
+            ey = vb.viewRange()[1]
+            e_span   = ey[1] - ey[0]
+            e_center = (ey[0] + ey[1]) / 2
+            new_center = e_center + delta_frac * e_span
+            new_span   = e_span * scale_frac
+            vb.setYRange(new_center - new_span / 2, new_center + new_span / 2, padding=0)
+
+    def _clear_extra_axes(self):
+        """Remove all extra ViewBoxes and AxisItems from the scene/layout."""
+        if self._plot is None:
+            return
+        pi = self._plot.plotItem
+        for _, (_, _, vb, ax) in self._plot_items.items():
+            if ax is not None:
+                try:
+                    pi.layout.removeItem(ax)
+                except Exception:
+                    pass
+            if vb is not None:
+                try:
+                    pi.scene().removeItem(vb)
+                except Exception:
+                    pass
+        left = self._plot.getAxis('left')
+        left.setPen(pg.mkPen(COLORS['text_secondary']))
+        try:
+            left.setTextPen(pg.mkPen(COLORS['text_secondary']))
+        except AttributeError:
+            pass
 
     def _toggle_stats(self, checked: bool):
         self._stats_visible = checked
@@ -805,7 +964,7 @@ const LEGEND_ITEMS={json.dumps(legend)};
         acc = COLORS['border_active']    # #58A6FF — column headers
 
         rows = []
-        for _key, (curve, color) in self._plot_items.items():
+        for _key, (curve, color, _, _) in self._plot_items.items():
             xd, yd = curve.getData()
             if xd is None or len(xd) == 0:
                 continue
@@ -881,7 +1040,12 @@ const LEGEND_ITEMS={json.dumps(legend)};
     def _on_plot_drag(self, ev, axis=None):
         """Left-drag anywhere on the plot defines the selection region."""
         if ev.button() != Qt.LeftButton:
-            pg.ViewBox.mouseDragEvent(self._plot.plotItem.vb, ev, axis)
+            vb = self._plot.plotItem.vb
+            y_before = vb.viewRange()[1]
+            pg.ViewBox.mouseDragEvent(vb, ev, axis)
+            # axis is not None when called from AxisItem → only move this one curve
+            if axis is None:
+                self._propagate_y_change(y_before, vb.viewRange()[1])
             return
         ev.accept()
         if self._region is None:
@@ -920,7 +1084,7 @@ const LEGEND_ITEMS={json.dumps(legend)};
             return
 
         rows = []
-        for _key, (curve, color) in self._plot_items.items():
+        for _key, (curve, color, _, _) in self._plot_items.items():
             xd, yd = curve.getData()
             if xd is None or len(xd) == 0:
                 continue
