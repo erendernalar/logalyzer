@@ -481,6 +481,8 @@ class LogInspectorModule(BaseModule):
         )
 
     def _on_map_loaded(self, ok: bool):
+        if self._view.url() != QUrl.fromLocalFile(_TMP_HTML):
+            return
         self._map_ready = ok
         if ok and self._region:
             self._on_region_changed()
