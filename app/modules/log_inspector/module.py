@@ -279,6 +279,8 @@ class LogInspectorModule(BaseModule):
             f"QTreeWidget::indicator:checked {{ background:{COLORS['border_active']};"
             f" border-color:{COLORS['border_active']}; }}"
         )
+        self._tree.setExpandsOnDoubleClick(False)
+        self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemChanged.connect(self._on_item_changed)
         self._tree.itemExpanded.connect(self._on_group_expanded)
         self._tree.itemCollapsed.connect(self._on_group_collapsed)
@@ -655,6 +657,10 @@ const LEGEND_ITEMS={json.dumps(legend)};
         )
 
     # ── Tree interaction ────────────────────────────────────
+
+    def _on_item_clicked(self, item: QTreeWidgetItem, column: int):
+        if item.data(0, Qt.UserRole) is None:
+            item.setExpanded(not item.isExpanded())
 
     def _on_group_expanded(self, item: QTreeWidgetItem):
         if item.data(0, Qt.UserRole) is None:
