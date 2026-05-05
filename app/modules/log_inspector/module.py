@@ -8,10 +8,10 @@ import pyqtgraph as pg
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt5.QtWidgets import (
-    QWidget, QHBoxLayout, QSplitter, QTreeWidget,
-    QTreeWidgetItem, QLabel, QSizePolicy,
+    QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QTreeWidget,
+    QTreeWidgetItem, QLabel, QSizePolicy, QPushButton,
 )
-from PyQt5.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QPoint, QUrl, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
@@ -200,6 +200,50 @@ class _HtmlBuilder(QThread):
             self.error.emit(str(exc))
 
 
+# ── Draggable stats overlay ──────────────────────────────────
+
+class _StatsBox(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._drag_pos = None
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"background-color:{COLORS['bg_secondary']}F0;"
+            f" border:1px solid {COLORS['border']};"
+            f" border-radius:6px;"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        self._label = QLabel()
+        self._label.setTextFormat(Qt.RichText)
+        self._label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addWidget(self._label)
+        self.setVisible(False)
+        self.setCursor(Qt.SizeAllCursor)
+
+    def set_content(self, html: str):
+        self._label.setText(html)
+        self._label.adjustSize()
+        self.adjustSize()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPos() - self.mapToGlobal(QPoint(0, 0))
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
+            new_pos = self.parent().mapFromGlobal(event.globalPos() - self._drag_pos)
+            p = self.parent()
+            x = max(0, min(new_pos.x(), p.width()  - self.width()))
+            y = max(0, min(new_pos.y(), p.height() - self.height()))
+            self.move(x, y)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+
 # ── Module ───────────────────────────────────────────────────
 
 class LogInspectorModule(BaseModule):
@@ -226,6 +270,8 @@ class LogInspectorModule(BaseModule):
         self._map_ready     = False
         self._builder       = None
         self._time_cursor   = None   # InfiniteLine on the graph
+        self._stats_box     = None
+        self._stats_visible = False
 
     # ── BaseModule interface ─────────────────────────────────
 
@@ -244,20 +290,42 @@ class LogInspectorModule(BaseModule):
             f"background-color: {COLORS['bg_secondary']};"
             f" border-right: 1px solid {COLORS['border']};"
         )
-        from PyQt5.QtWidgets import QVBoxLayout
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(0)
 
-        hdr = QLabel("  CHANNELS")
-        hdr.setFixedHeight(36)
-        hdr.setStyleSheet(
+        hdr_widget = QWidget()
+        hdr_widget.setFixedHeight(36)
+        hdr_widget.setStyleSheet(
             f"background-color: {COLORS['bg_secondary']};"
-            f" color: {COLORS['text_disabled']};"
-            f" font-size: 10px; font-weight: bold;"
             f" border-bottom: 1px solid {COLORS['border']};"
         )
-        ll.addWidget(hdr)
+        hdr_row = QHBoxLayout(hdr_widget)
+        hdr_row.setContentsMargins(8, 0, 6, 0)
+
+        hdr_lbl = QLabel("CHANNELS")
+        hdr_lbl.setStyleSheet(
+            f"color: {COLORS['text_disabled']}; font-size: 10px; font-weight: bold;"
+            " border: none;"
+        )
+        hdr_row.addWidget(hdr_lbl)
+        hdr_row.addStretch()
+
+        self._stats_btn = QPushButton("STATS")
+        self._stats_btn.setCheckable(True)
+        self._stats_btn.setFixedHeight(22)
+        self._stats_btn.setStyleSheet(
+            f"QPushButton {{ background:{COLORS['bg_tertiary']}; color:{COLORS['text_disabled']};"
+            f" border:1px solid {COLORS['border']}; border-radius:3px;"
+            f" font-size:9px; font-weight:bold; padding:0 6px; }}"
+            f"QPushButton:hover {{ color:{COLORS['text_secondary']}; }}"
+            f"QPushButton:checked {{ background:{COLORS['border_active']}22;"
+            f" color:{COLORS['border_active']}; border-color:{COLORS['border_active']}; }}"
+        )
+        self._stats_btn.toggled.connect(self._toggle_stats)
+        hdr_row.addWidget(self._stats_btn)
+
+        ll.addWidget(hdr_widget)
 
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
@@ -318,7 +386,17 @@ class LogInspectorModule(BaseModule):
         )
         self._hover_label.setVisible(False)
 
-        right.addWidget(self._plot)
+        # Wrap the plot in a plain QWidget so the stats box (a sibling, not a
+        # child of the QGraphicsView viewport) receives mouse events normally.
+        plot_container = QWidget()
+        pc_layout = QVBoxLayout(plot_container)
+        pc_layout.setContentsMargins(0, 0, 0, 0)
+        pc_layout.addWidget(self._plot)
+
+        self._stats_box = _StatsBox(plot_container)
+        self._stats_box.move(10, 10)
+
+        right.addWidget(plot_container)
 
         self._view = QWebEngineView()
         self._view.setMinimumHeight(80)
@@ -696,6 +774,7 @@ const LEGEND_ITEMS={json.dumps(legend)};
                                 name=f"{attr.upper()}.{fk}")
         self._plot_items[key] = (curve, color)
         item.setForeground(0, QColor(color))
+        self._update_stats_box()
 
     def _remove_plot_line(self, item: QTreeWidgetItem, key: str):
         if key not in self._plot_items:
@@ -704,6 +783,73 @@ const LEGEND_ITEMS={json.dumps(legend)};
         self._plot.removeItem(curve)
         self._legend.removeItem(curve)
         item.setForeground(0, QColor(COLORS['text_secondary']))
+        self._update_stats_box()
+
+    def _toggle_stats(self, checked: bool):
+        self._stats_visible = checked
+        if checked:
+            self._update_stats_box()
+        else:
+            self._stats_box.setVisible(False)
+
+    def _update_stats_box(self):
+        if not self._stats_visible or self._stats_box is None or self._region is None:
+            return
+        if not self._plot_items:
+            self._stats_box.setVisible(False)
+            return
+
+        t0, t1 = self._region.getRegion()
+        ts  = COLORS['text_secondary']   # #8B949E — channel names, time
+        tp  = COLORS['text_primary']     # #E6EDF3 — values
+        acc = COLORS['border_active']    # #58A6FF — column headers
+
+        rows = []
+        for _key, (curve, color) in self._plot_items.items():
+            xd, yd = curve.getData()
+            if xd is None or len(xd) == 0:
+                continue
+            mask = (xd >= t0) & (xd <= t1)
+            vals = yd[mask]
+            if len(vals) == 0:
+                continue
+            rows.append((color, curve.name() or _key,
+                         float(np.min(vals)), float(np.max(vals)), float(np.mean(vals))))
+
+        if not rows:
+            self._stats_box.setVisible(False)
+            return
+
+        html = (
+            f"<div style='color:{ts};font-size:10px;font-weight:bold;"
+            f" letter-spacing:0.05em;margin-bottom:5px'>"
+            f"STATS &nbsp;"
+            f"<span style='color:{tp};font-weight:normal;font-size:10px'>"
+            f"{t0:.1f}s – {t1:.1f}s</span></div>"
+            "<table cellspacing='3'>"
+            f"<tr>"
+            f"<td></td>"
+            f"<td style='color:{acc};font-size:10px;font-weight:bold;padding-right:10px'>MIN</td>"
+            f"<td style='color:{acc};font-size:10px;font-weight:bold;padding-right:10px'>MAX</td>"
+            f"<td style='color:{acc};font-size:10px;font-weight:bold'>MEAN</td>"
+            f"</tr>"
+            + ''.join(
+                f"<tr>"
+                f"<td style='padding-right:8px'>"
+                f"<span style='color:{c}'>&#9632;</span>"
+                f"&nbsp;<span style='color:{ts};font-size:11px'>{n}</span>"
+                f"</td>"
+                f"<td style='color:{tp};font-size:11px;padding-right:10px'><b>{mn:.4g}</b></td>"
+                f"<td style='color:{tp};font-size:11px;padding-right:10px'><b>{mx:.4g}</b></td>"
+                f"<td style='color:{tp};font-size:11px'><b>{avg:.4g}</b></td>"
+                f"</tr>"
+                for c, n, mn, mx, avg in rows
+            )
+            + "</table>"
+        )
+        self._stats_box.set_content(html)
+        self._stats_box.setVisible(True)
+        self._stats_box.raise_()
 
     # ── Graph ↔ 3D time sync ───────────────────────────────
 
@@ -820,6 +966,7 @@ const LEGEND_ITEMS={json.dumps(legend)};
     # ── Region → 3D sync ───────────────────────────────────
 
     def _on_region_changed(self):
+        self._update_stats_box()
         if not self._map_ready or self._view is None:
             return
         t0, t1 = self._region.getRegion()
