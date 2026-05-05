@@ -274,6 +274,8 @@ class LogInspectorModule(BaseModule):
             "QTreeWidget::branch { background:transparent; }"
         )
         self._tree.itemChanged.connect(self._on_item_changed)
+        self._tree.itemExpanded.connect(self._on_group_expanded)
+        self._tree.itemCollapsed.connect(self._on_group_collapsed)
         ll.addWidget(self._tree, 1)
         outer.addWidget(left)
 
@@ -353,7 +355,7 @@ class LogInspectorModule(BaseModule):
             if not available:
                 continue
 
-            grp = QTreeWidgetItem([f"  {group_label}"])
+            grp = QTreeWidgetItem([f"  ▸  {group_label}"])
             grp.setFlags(grp.flags() & ~Qt.ItemIsUserCheckable)
             gf = QFont(); gf.setBold(True); gf.setPointSize(10)
             grp.setFont(0, gf)
@@ -367,7 +369,7 @@ class LogInspectorModule(BaseModule):
                 grp.addChild(child)
 
             self._tree.addTopLevelItem(grp)
-            grp.setExpanded(True)
+            grp.setExpanded(False)
 
         self._tree.blockSignals(False)
 
@@ -645,6 +647,14 @@ const LEGEND_ITEMS={json.dumps(legend)};
         )
 
     # ── Tree interaction ────────────────────────────────────
+
+    def _on_group_expanded(self, item: QTreeWidgetItem):
+        if item.data(0, Qt.UserRole) is None:
+            item.setText(0, item.text(0).replace('▸', '▾', 1))
+
+    def _on_group_collapsed(self, item: QTreeWidgetItem):
+        if item.data(0, Qt.UserRole) is None:
+            item.setText(0, item.text(0).replace('▾', '▸', 1))
 
     def _on_item_changed(self, item: QTreeWidgetItem, column: int):
         data = item.data(0, Qt.UserRole)
