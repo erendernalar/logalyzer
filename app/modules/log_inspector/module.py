@@ -272,6 +272,12 @@ class LogInspectorModule(BaseModule):
             f"QTreeWidget::item:hover {{ background:{COLORS['bg_hover']}; }}"
             f"QTreeWidget::item:selected {{ background:{COLORS['bg_tertiary']}; }}"
             "QTreeWidget::branch { background:transparent; }"
+            f"QTreeWidget::indicator {{ width:14px; height:14px;"
+            f" border:1px solid {COLORS['border']}; border-radius:3px;"
+            f" background:{COLORS['bg_tertiary']}; }}"
+            f"QTreeWidget::indicator:hover {{ border-color:{COLORS['border_active']}; }}"
+            f"QTreeWidget::indicator:checked {{ background:{COLORS['border_active']};"
+            f" border-color:{COLORS['border_active']}; }}"
         )
         self._tree.itemChanged.connect(self._on_item_changed)
         self._tree.itemExpanded.connect(self._on_group_expanded)
