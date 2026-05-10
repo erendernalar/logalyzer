@@ -93,6 +93,10 @@ class LogData:
     qtun: dict = field(default_factory=dict)
     # TimeUS, Tilt, Dsired, Ang, Dist  (QuadPlane transition tuning — optional)
 
+    # ── Mission waypoints ──────────────────────────────────
+    waypoints: list = field(default_factory=list)
+    # List of {'seq': int, 'cmd_id': int, 'lat': float, 'lng': float, 'alt': float}
+
     # ── Events ─────────────────────────────────────────────
     events: list = field(default_factory=list)
 

@@ -316,7 +316,7 @@ class LogInspectorModule(BaseModule):
         hdr_row.addWidget(hdr_lbl)
         hdr_row.addStretch()
 
-        self._stats_btn = QPushButton("STATS")
+        self._stats_btn = QPushButton("SUMMARY")
         self._stats_btn.setCheckable(True)
         self._stats_btn.setFixedHeight(22)
         self._stats_btn.setStyleSheet(
@@ -439,10 +439,12 @@ class LogInspectorModule(BaseModule):
         plot_container = QWidget()
         pc_layout = QVBoxLayout(plot_container)
         pc_layout.setContentsMargins(0, 0, 0, 0)
+        pc_layout.setSpacing(0)
+        pc_layout.addWidget(self._build_graph_toolbar())
         pc_layout.addWidget(self._plot)
 
         self._stats_box = _StatsBox(plot_container)
-        self._stats_box.move(10, 10)
+        self._stats_box.move(10, 40)
 
         right.addWidget(plot_container)
 
@@ -706,6 +708,19 @@ class LogInspectorModule(BaseModule):
                     'sw': sw, 'ne': ne,
                 })
 
+        # Waypoints → 3D scene coordinates
+        waypoints_js = []
+        for wp in log_data.waypoints:
+            wlat, wlng, walt = wp['lat'], wp['lng'], wp['alt']
+            if wlat == 0.0 and wlng == 0.0:
+                continue
+            we = R * math.cos(math.radians(home_lat)) * math.radians(wlng - home_lng)
+            wn = R * math.radians(wlat - home_lat)
+            waypoints_js.append({
+                'x': round(we, 1), 'y': round(walt, 1), 'z': round(-wn, 1),
+                'seq': wp['seq'], 'cmd': wp['cmd_id'],
+            })
+
         legend = _legend_items(log_data.events)
         data_js = f"""
 const HOME_LAT={home_lat}, HOME_LNG={home_lng};
@@ -722,6 +737,7 @@ const SPEEDS={json.dumps([round(s, 2) for s in speeds])};
 const MODES={json.dumps(mode_labels)};
 const PATH_COLORS={json.dumps([[round(c, 3) for c in rgb] for rgb in colors_rgb])};
 const LEGEND_ITEMS={json.dumps(legend)};
+const WAYPOINTS={json.dumps(waypoints_js)};
 """
         return _HTML_TEMPLATE.replace('/*DATA_JS*/', data_js)
 
@@ -944,6 +960,79 @@ const LEGEND_ITEMS={json.dumps(legend)};
         except AttributeError:
             pass
 
+    def _build_graph_toolbar(self) -> QWidget:
+        bar = QWidget()
+        bar.setFixedHeight(30)
+        bar.setStyleSheet(
+            f"background-color:{COLORS['bg_secondary']};"
+            f" border-bottom:1px solid {COLORS['border']};"
+        )
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(8, 0, 8, 0)
+        row.setSpacing(4)
+
+        btn_style = (
+            f"QPushButton {{ background:{COLORS['bg_tertiary']}; color:{COLORS['text_disabled']};"
+            f" border:1px solid {COLORS['border']}; border-radius:3px;"
+            f" font-size:9px; font-weight:bold; padding:0 8px; }}"
+            f"QPushButton:hover {{ color:{COLORS['text_secondary']};"
+            f" border-color:{COLORS['border_active']}55; }}"
+            f"QPushButton:pressed {{ background:{COLORS['border_active']}22;"
+            f" color:{COLORS['border_active']}; border-color:{COLORS['border_active']}; }}"
+        )
+
+        def _btn(label, slot):
+            b = QPushButton(label)
+            b.setFixedHeight(20)
+            b.setStyleSheet(btn_style)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(slot)
+            return b
+
+        row.addWidget(_btn("⌂  Reset View",     self._on_reset_view))
+        row.addWidget(_btn("⇔  Fit Selection",  self._on_fit_selection))
+        row.addWidget(_btn("↕  Auto Y",          self._on_auto_y))
+
+        sep = QWidget()
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background:{COLORS['border']};")
+        row.addWidget(sep)
+
+        row.addWidget(_btn("⊘  Clear Selection", self._on_clear_selection))
+        row.addStretch()
+        return bar
+
+    def _on_reset_view(self):
+        if self._plot is None:
+            return
+        self._plot.plotItem.vb.autoRange()
+
+    def _on_fit_selection(self):
+        if self._plot is None or self._region is None:
+            return
+        t0, t1 = self._region.getRegion()
+        padding = (t1 - t0) * 0.02
+        self._plot.setXRange(t0 - padding, t1 + padding, padding=0)
+
+    def _on_auto_y(self):
+        if self._plot is None:
+            return
+        vb = self._plot.plotItem.vb
+        x_range = vb.viewRange()[0]
+        vb.autoRange()
+        vb.setXRange(x_range[0], x_range[1], padding=0)
+        for _, (_, _, extra_vb, _) in self._plot_items.items():
+            if extra_vb is not None:
+                xr = extra_vb.viewRange()[0]
+                extra_vb.autoRange()
+                extra_vb.setXRange(xr[0], xr[1], padding=0)
+
+    def _on_clear_selection(self):
+        if self._plot is None or self._region is None or self._log_data is None:
+            return
+        dur = self._log_data.duration_seconds
+        self._region.setRegion([0, dur])
+
     def _toggle_stats(self, checked: bool):
         self._stats_visible = checked
         if checked:
@@ -982,7 +1071,7 @@ const LEGEND_ITEMS={json.dumps(legend)};
         html = (
             f"<div style='color:{ts};font-size:10px;font-weight:bold;"
             f" letter-spacing:0.05em;margin-bottom:5px'>"
-            f"STATS &nbsp;"
+            f"SUMMARY &nbsp;"
             f"<span style='color:{tp};font-weight:normal;font-size:10px'>"
             f"{t0:.1f}s – {t1:.1f}s</span></div>"
             "<table cellspacing='3'>"
@@ -1181,6 +1270,8 @@ body{background:#0D1117;overflow:hidden}
 <div id="controls">
   <button class="cb" id="bpl" onclick="togglePlay()">&#9654;</button>
   <button class="cb" onclick="stopPlay()">&#9632;</button>
+  <div class="sep"></div>
+  <button class="cb on" id="bwp" onclick="toggleWaypoints()">WP</button>
   <div class="sep"></div>
   <span style="color:#8B949E;font-size:11px">Spd:</span>
   <button class="cb sp on" data-v="1"  onclick="setSp(1)">1&times;</button>
@@ -1396,6 +1487,96 @@ function buildPathTubes(fromIdx, toIdx){
 
 // Build full path on load
 buildPathTubes(0, N_PTS);
+
+// ── Waypoints ─────────────────────────────────────────────
+const WP_CMD_COLORS = {
+  16: 0x58A6FF,  // NAV_WAYPOINT
+  17: 0xF0883E,  // NAV_LOITER_UNLIM
+  18: 0xF0883E,  // NAV_LOITER_TURNS
+  19: 0xF85149,  // NAV_RETURN_TO_LAUNCH
+  20: 0x3FB950,  // NAV_LAND
+  21: 0xF0883E,  // NAV_LOITER_TIME
+  22: 0xE3B341,  // NAV_TAKEOFF
+};
+function _wpColor(cmd){ return WP_CMD_COLORS[cmd] || 0x8B949E; }
+
+function _wpSprite(seq, hexColor){
+  const c = document.createElement('canvas');
+  c.width = 80; c.height = 80;
+  const ctx = c.getContext('2d');
+  const hx = '#' + hexColor.toString(16).padStart(6,'0');
+  // outer glow ring
+  ctx.shadowColor = hx; ctx.shadowBlur = 12;
+  ctx.beginPath(); ctx.arc(40,40,30,0,Math.PI*2);
+  ctx.fillStyle = 'rgba(13,17,23,0.85)'; ctx.fill();
+  ctx.strokeStyle = hx; ctx.lineWidth = 4; ctx.stroke();
+  ctx.shadowBlur = 0;
+  // number
+  ctx.fillStyle = '#E6EDF3';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(String(seq), 40, 41);
+  const tex = new THREE.CanvasTexture(c);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false}));
+  sp.scale.set(14,14,1);
+  return sp;
+}
+
+const wpGroup = new THREE.Group();
+scene.add(wpGroup);
+
+(function buildWaypoints(){
+  const btn = document.getElementById('bwp');
+  if(!WAYPOINTS || !WAYPOINTS.length){ if(btn) btn.style.display='none'; return; }
+
+  const sorted = [...WAYPOINTS].sort((a,b)=>a.seq-b.seq);
+
+  // Mission path dashed line through positioned waypoints in order
+  const missionPts = sorted.map(w=>new THREE.Vector3(w.x, w.y, w.z));
+  if(missionPts.length >= 2){
+    const geom = new THREE.BufferGeometry().setFromPoints(missionPts);
+    const mat = new THREE.LineDashedMaterial({
+      color:0x58A6FF, dashSize:6, gapSize:3, opacity:0.55, transparent:true
+    });
+    const line = new THREE.Line(geom, mat);
+    line.computeLineDistances();
+    wpGroup.add(line);
+  }
+
+  sorted.forEach(function(wp){
+    const col = _wpColor(wp.cmd);
+
+    // Vertical pole from ground to waypoint altitude
+    const poleH = Math.max(0.5, wp.y);
+    const poleGeom = new THREE.CylinderGeometry(0.25, 0.25, poleH, 6);
+    const poleMat = new THREE.MeshBasicMaterial({color:col, opacity:0.45, transparent:true});
+    const pole = new THREE.Mesh(poleGeom, poleMat);
+    pole.position.set(wp.x, poleH/2, wp.z);
+    wpGroup.add(pole);
+
+    // Sphere marker at waypoint height
+    const sphGeom = new THREE.SphereGeometry(2.8, 12, 8);
+    const sphMat = new THREE.MeshPhongMaterial({
+      color:col, emissive:col, emissiveIntensity:0.35, shininess:60
+    });
+    const sph = new THREE.Mesh(sphGeom, sphMat);
+    sph.position.set(wp.x, wp.y, wp.z);
+    wpGroup.add(sph);
+
+    // Numbered label sprite above sphere
+    const sprite = _wpSprite(wp.seq, col);
+    sprite.position.set(wp.x, wp.y + 9, wp.z);
+    wpGroup.add(sprite);
+  });
+})();
+
+let _wpVisible = true;
+function toggleWaypoints(){
+  _wpVisible = !_wpVisible;
+  wpGroup.visible = _wpVisible;
+  const btn = document.getElementById('bwp');
+  if(btn) btn.classList.toggle('on', _wpVisible);
+}
 
 // ── Trail (white, grows during playback) ──────────────────
 const trailPositions = new Float32Array(N_PTS*3);

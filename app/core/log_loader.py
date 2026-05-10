@@ -131,6 +131,7 @@ class LogLoader(QThread):
 
         events = []
         params = {}
+        waypoints_list = []
         vehicle_type = ""
         firmware_version = ""
         total_messages = 0
@@ -239,6 +240,17 @@ class LogLoader(QThread):
                 mode_name = lut.get(mode_num, str(mode_num))
                 events.append(FlightEvent(t, 'mode_change', f'Mode: {mode_name}'))
 
+            elif mtype == 'CMD':
+                seq    = int(getattr(msg, 'CNum', 0))
+                cmd_id = int(getattr(msg, 'CId', 0))
+                lat    = float(getattr(msg, 'Lat', 0.0))
+                lng    = float(getattr(msg, 'Lng', 0.0))
+                alt    = float(getattr(msg, 'Alt', 0.0))
+                waypoints_list.append({
+                    'seq': seq, 'cmd_id': cmd_id,
+                    'lat': lat, 'lng': lng, 'alt': alt,
+                })
+
             elif mtype == 'PARM':
                 name = getattr(msg, 'Name', '')
                 val = getattr(msg, 'Value', 0.0)
@@ -272,6 +284,7 @@ class LogLoader(QThread):
         log.total_messages = total_messages
         log.events = events
         log.params = params
+        log.waypoints = waypoints_list
 
         log.imu  = self._to_arrays(imu_acc)
         log.vibe = self._to_arrays(vibe_acc)
