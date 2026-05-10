@@ -1,21 +1,19 @@
 import json
 import os
 import math
-import base64
-import urllib.request
 import numpy as np
 import pyqtgraph as pg
-from concurrent.futures import ThreadPoolExecutor
 
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QTreeWidget,
     QTreeWidgetItem, QLabel, QSizePolicy, QPushButton,
 )
-from PyQt5.QtCore import Qt, QPoint, QUrl, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QPoint, QUrl
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
 from app.modules.base_module import BaseModule
+from app.modules.tile_fetch import HtmlBuilder, fetch_tiles, tile_bounds, make_loading_html
 from app.modules.waypoints_3d_shared import waypoints_to_enu, WAYPOINTS_JS
 from app.theme.style import COLORS
 
@@ -116,30 +114,6 @@ _FIELD_GROUPS = [
 
 # ── Tile helpers ─────────────────────────────────────────────
 
-def _lat_lng_to_tile(lat, lng, zoom):
-    n = 2 ** zoom
-    tx = int((lng + 180) / 360 * n)
-    lat_r = math.radians(lat)
-    ty = int((1 - math.log(math.tan(lat_r) + 1 / math.cos(lat_r)) / math.pi) / 2 * n)
-    return tx, max(0, ty)
-
-
-def _tile_bounds(tx, ty, zoom):
-    n = 2 ** zoom
-    west  = tx / n * 360 - 180
-    east  = (tx + 1) / n * 360 - 180
-    north = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * ty / n))))
-    south = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (ty + 1) / n))))
-    return west, south, east, north
-
-
-def _fetch_b64(url):
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Logalyzer/1.0'})
-        data = urllib.request.urlopen(req, timeout=8).read()
-        return 'data:image/png;base64,' + base64.b64encode(data).decode()
-    except Exception:
-        return None
 
 
 def _mode_color(mode_name: str) -> str:
@@ -186,24 +160,6 @@ def _hex_rgb(h):
 
 # ── Background HTML builder ──────────────────────────────────
 
-class _HtmlBuilder(QThread):
-    ready = pyqtSignal()
-    error = pyqtSignal(str)
-
-    def __init__(self, log_data, make_html_fn, out_path):
-        super().__init__()
-        self._log  = log_data
-        self._fn   = make_html_fn
-        self._path = out_path
-
-    def run(self):
-        try:
-            html = self._fn(self._log)
-            with open(self._path, 'w', encoding='utf-8') as f:
-                f.write(html)
-            self.ready.emit()
-        except Exception as exc:
-            self.error.emit(str(exc))
 
 
 # ── Draggable stats overlay ──────────────────────────────────
@@ -559,9 +515,10 @@ class LogInspectorModule(BaseModule):
             self._builder.terminate()
             self._builder.wait()
 
-        self._builder = _HtmlBuilder(log_data, self._make_3d_html, _TMP_HTML)
+        self._builder = HtmlBuilder(log_data, self._make_3d_html, _TMP_HTML)
         self._builder.ready.connect(self._on_html_ready)
         self._builder.error.connect(self._on_build_error)
+        self._builder.progress.connect(self._on_build_progress)
         self._builder.start()
 
     def clear(self) -> None:
@@ -595,14 +552,7 @@ class LogInspectorModule(BaseModule):
     # ── 3D view lifecycle ────────────────────────────────────
 
     def _loading_html(self):
-        return (
-            f'<!DOCTYPE html><html><body style="background:{COLORS["bg_primary"]};'
-            f'color:#58A6FF;display:flex;flex-direction:column;align-items:center;'
-            f'justify-content:center;height:100vh;margin:0;font-family:monospace;gap:14px;">'
-            f'<div style="font-size:20px">⊞ Log Inspector</div>'
-            f'<div style="font-size:13px;color:#8B949E">Fetching terrain &amp; satellite tiles…</div>'
-            f'</body></html>'
-        )
+        return make_loading_html('⊞ Log Inspector')
 
     def _on_html_ready(self):
         self._view.load(QUrl.fromLocalFile(_TMP_HTML))
@@ -614,6 +564,9 @@ class LogInspectorModule(BaseModule):
             f'font-family:sans-serif;font-size:15px;">Build error: {msg}</body></html>'
         )
 
+    def _on_build_progress(self, done, total):
+        self._view.page().runJavaScript(f'if(window.updateProgress)updateProgress({done},{total})')
+
     def _on_map_loaded(self, ok: bool):
         if self._view.url() != QUrl.fromLocalFile(_TMP_HTML):
             return
@@ -623,7 +576,7 @@ class LogInspectorModule(BaseModule):
 
     # ── 3D HTML generation ──────────────────────────────────
 
-    def _make_3d_html(self, log_data) -> str:
+    def _make_3d_html(self, log_data, progress_cb=None) -> str:
         pos = log_data.pos
         att = log_data.att
         if 'Lat' not in pos or len(pos.get('Lat', [])) == 0:
@@ -689,12 +642,12 @@ class LogInspectorModule(BaseModule):
         times_s = [round((float(t) - t0) / 1_000_000, 3) for t in times]
 
         zoom, sat_n, min_tx, min_ty, max_tx, max_ty, terr_b64, tex_subs_b64 = \
-            self._fetch_tiles(lats, lngs, home_lat, home_lng)
+            fetch_tiles(lats, lngs, home_lat, home_lng, progress_cb)
 
         tiles_js = []
         for ty in range(min_ty, max_ty + 1):
             for tx in range(min_tx, max_tx + 1):
-                w_b, s_b, e_b, n_b = _tile_bounds(tx, ty, zoom)
+                w_b, s_b, e_b, n_b = tile_bounds(tx, ty, zoom)
                 def ll2xz(lat, lng, _hl=home_lat, _hg=home_lng, _R=R):
                     e2 = _R * math.cos(math.radians(_hl)) * math.radians(lng - _hg)
                     n2 = _R * math.radians(lat - _hl)
@@ -731,58 +684,6 @@ const LEGEND_ITEMS={json.dumps(legend)};
 const WAYPOINTS={json.dumps(waypoints_js)};
 """
         return _HTML_TEMPLATE.replace('/*DATA_JS*/', data_js).replace('/*WAYPOINTS_JS*/', WAYPOINTS_JS)
-
-    def _fetch_tiles(self, lats, lngs, home_lat, home_lng):
-        zoom = 13
-        for z in range(15, 7, -1):
-            txs = [_lat_lng_to_tile(la, lo, z)[0] for la, lo in zip(lats, lngs)]
-            tys = [_lat_lng_to_tile(la, lo, z)[1] for la, lo in zip(lats, lngs)]
-            if max(txs) - min(txs) <= 4 and max(tys) - min(tys) <= 4:
-                zoom = z; break
-
-        txs = [_lat_lng_to_tile(la, lo, zoom)[0] for la, lo in zip(lats, lngs)]
-        tys = [_lat_lng_to_tile(la, lo, zoom)[1] for la, lo in zip(lats, lngs)]
-        max_coord = 2 ** zoom - 1
-        buf = 6
-        min_tx = max(0,         min(txs) - buf)
-        max_tx = min(max_coord, max(txs) + buf)
-        min_ty = max(0,         min(tys) - buf)
-        max_ty = min(max_coord, max(tys) + buf)
-
-        sat_zoom = zoom + 1
-        sat_n    = 2
-
-        jobs = []
-        for ty in range(min_ty, max_ty + 1):
-            for tx in range(min_tx, max_tx + 1):
-                key = f'{tx}_{ty}'
-                jobs.append(('t', key, 0,
-                    f'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{zoom}/{tx}/{ty}.png'))
-                idx = 0
-                for sy in range(ty * sat_n, ty * sat_n + sat_n):
-                    for sx in range(tx * sat_n, tx * sat_n + sat_n):
-                        jobs.append(('s', key, idx,
-                            f'https://server.arcgisonline.com/ArcGIS/rest/services/'
-                            f'World_Imagery/MapServer/tile/{sat_zoom}/{sy}/{sx}'))
-                        idx += 1
-
-        terr_b64     = {}
-        tex_subs_b64 = {f'{tx}_{ty}': [None] * (sat_n * sat_n)
-                        for ty in range(min_ty, max_ty + 1)
-                        for tx in range(min_tx, max_tx + 1)}
-
-        def _do(job):
-            kind, key, i, url = job
-            return kind, key, i, _fetch_b64(url)
-
-        with ThreadPoolExecutor(max_workers=24) as pool:
-            for kind, key, i, data in pool.map(_do, jobs):
-                if kind == 't':
-                    terr_b64[key] = data
-                else:
-                    tex_subs_b64[key][i] = data
-
-        return zoom, sat_n, min_tx, min_ty, max_tx, max_ty, terr_b64, tex_subs_b64
 
     def _empty_html(self, msg):
         return (
