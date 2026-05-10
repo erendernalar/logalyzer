@@ -11,6 +11,7 @@ from PyQt5.QtCore import QUrl, QThread, pyqtSignal
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
 from app.modules.base_module import BaseModule
+from app.modules.waypoints_3d_shared import waypoints_to_enu, WAYPOINTS_JS
 from app.theme.style import COLORS
 
 _ASSETS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'assets'))
@@ -220,6 +221,9 @@ class FlightReview3DModule(BaseModule):
         t0 = float(times[0])
         times_s = [round((float(t)-t0)/1_000_000, 3) for t in times]
 
+        # Waypoints → 3D scene coordinates
+        waypoints_js = waypoints_to_enu(log_data.waypoints, home_lat, home_lng, R)
+
         # Terrain tiles (fetched in Python → embedded as base64)
         zoom, sat_n, min_tx, min_ty, max_tx, max_ty, terr_b64, tex_subs_b64 = \
             self._fetch_tiles(lats, lngs, home_lat, home_lng)
@@ -257,8 +261,9 @@ const YAWS={json.dumps([round(y,2) for y in yaws_d])};
 const SPEEDS={json.dumps([round(s,2) for s in speeds])};
 const MODES={json.dumps(mode_labels)};
 const PATH_COLORS={json.dumps([[round(c,3) for c in rgb] for rgb in colors_rgb])};
+const WAYPOINTS={json.dumps(waypoints_js)};
 """
-        return _HTML_TEMPLATE.replace('/*DATA_JS*/', data_js)
+        return _HTML_TEMPLATE.replace('/*DATA_JS*/', data_js).replace('/*WAYPOINTS_JS*/', WAYPOINTS_JS)
 
     def _fetch_tiles(self, lats, lngs, home_lat, home_lng):
         # Find highest zoom where flight fits in ≤5×5 tiles (max zoom 15 = Terrarium tile limit)
@@ -371,6 +376,8 @@ body{background:#0D1117;overflow:hidden}
   <button class="cb cm on" id="bfr" onclick="setCam('free')">Free</button>
   <button class="cb cm"    id="bfo" onclick="setCam('follow')">Follow</button>
   <button class="cb cm"    id="bfp" onclick="setCam('fpv')">FPV</button>
+  <div class="sep"></div>
+  <button class="cb on" id="bwp" onclick="toggleWaypoints()">WP</button>
   <div class="sep"></div>
   <button class="cb" onclick="document.getElementById('stl-inp').click()">Load STL</button>
   <input type="file" id="stl-inp" accept=".stl" onchange="loadSTL(this)">
@@ -523,6 +530,8 @@ function loadSTL(inp){
   reader.readAsArrayBuffer(file);
   inp.value='';
 }
+
+/*WAYPOINTS_JS*/
 
 // ── Flight path ───────────────────────────────────────────────────────────
 (function(){
