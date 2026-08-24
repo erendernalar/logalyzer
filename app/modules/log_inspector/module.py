@@ -12,6 +12,7 @@ from PyQt5.QtCore import Qt, QPoint, QUrl
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
+from app.core.ardupilot_names import servo_function_name, rc_option_name
 from app.modules.base_module import BaseModule
 from app.modules.tile_fetch import HtmlBuilder, fetch_tiles, tile_bounds, make_loading_html
 from app.modules.waypoints_3d_shared import waypoints_to_enu, WAYPOINTS_JS
@@ -116,6 +117,41 @@ _FIELD_GROUPS = [
     ('QPOS (VTOL Pos)',  'qpos', [('State', 'PosCtrl State'), ('Dist', 'Dist (m)'),
                                    ('TSpd', 'Target Spd (m/s)'), ('TAcc', 'Target Acc (m/s²)')]),
 ]
+
+
+def _channel_labels(attr, params):
+    """{field_key: 'configured function'} for the RC input/output groups.
+
+    Read straight from the parameters in the log: SERVOn_FUNCTION for outputs,
+    RCn_OPTION for inputs, plus RCMAP_* for the four stick channels. Returns an
+    empty dict for any other message type.
+    """
+    if not params or attr not in ('rcin', 'rcou'):
+        return {}
+
+    out = {}
+    if attr == 'rcou':
+        for ch in range(1, 19):
+            name = servo_function_name(params.get('SERVO%d_FUNCTION' % ch))
+            if name:
+                out['C%d' % ch] = name
+        return out
+
+    # RC input: the sticks come from RCMAP_*, the rest from RCn_OPTION
+    for stick, pname in (('Roll', 'RCMAP_ROLL'), ('Pitch', 'RCMAP_PITCH'),
+                         ('Throttle', 'RCMAP_THROTTLE'), ('Yaw', 'RCMAP_YAW')):
+        try:
+            ch = int(params.get(pname, 0))
+        except (TypeError, ValueError):
+            continue
+        if ch > 0:
+            out['C%d' % ch] = stick
+    for ch in range(1, 19):
+        name = rc_option_name(params.get('RC%d_OPTION' % ch))
+        if name:
+            key = 'C%d' % ch
+            out[key] = f'{out[key]}, {name}' if key in out else name
+    return out
 
 
 # ── Tile helpers ─────────────────────────────────────────────
@@ -454,6 +490,7 @@ class LogInspectorModule(BaseModule):
                          if fk in msg and len(msg[fk]) > 0]
             if not available:
                 continue
+            configured = _channel_labels(attr, getattr(log_data, 'params', None))
 
             grp = QTreeWidgetItem([f"  ▸  {group_label}"])
             grp.setFlags(grp.flags() & ~Qt.ItemIsUserCheckable)
@@ -462,8 +499,10 @@ class LogInspectorModule(BaseModule):
             grp.setForeground(0, QColor(COLORS['text_primary']))
 
             for fk, fn in available:
-                child = QTreeWidgetItem([f"   {fn}"])
-                child.setData(0, Qt.UserRole, (attr, fk, fn))
+                role = configured.get(fk, '')
+                label = f'{fn} · {role}' if role else fn
+                child = QTreeWidgetItem([f"   {label}"])
+                child.setData(0, Qt.UserRole, (attr, fk, fn, role))
                 child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
                 child.setCheckState(0, Qt.Unchecked)
                 grp.addChild(child)
@@ -717,15 +756,16 @@ const WAYPOINTS={json.dumps(waypoints_js)};
         data = item.data(0, Qt.UserRole)
         if data is None:
             return
-        attr, fk, fn = data
+        attr, fk, fn, role = data
         key     = f"{attr}.{fk}"
         checked = item.checkState(0) == Qt.Checked
         if checked and key not in self._plot_items:
-            self._add_plot_line(item, attr, fk, fn, key)
+            self._add_plot_line(item, attr, fk, fn, key, role)
         elif not checked and key in self._plot_items:
             self._remove_plot_line(item, key)
 
-    def _add_plot_line(self, item: QTreeWidgetItem, attr: str, fk: str, fn: str, key: str):
+    def _add_plot_line(self, item: QTreeWidgetItem, attr: str, fk: str, fn: str,
+                       key: str, role: str = ''):
         if self._log_data is None:
             return
         msg = getattr(self._log_data, attr, {})
@@ -736,6 +776,8 @@ const WAYPOINTS={json.dumps(waypoints_js)};
         color = _PALETTE[self._color_idx % len(_PALETTE)]
         self._color_idx += 1
         name = f"{attr.upper()}.{fk}"
+        if role:
+            name += f' · {role}'
 
         if len(self._plot_items) == 0:
             # First curve — use the main left axis
