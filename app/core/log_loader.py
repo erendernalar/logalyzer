@@ -128,8 +128,12 @@ class LogLoader(QThread):
         arsp_acc = self._make_acc()
         motb_acc = self._make_acc()
         qtun_acc = self._make_acc()
+        qpos_acc = self._make_acc()
+        tilt_acc = self._make_acc()
+        stat_acc = self._make_acc()
 
         events = []
+        messages = []
         params = {}
         waypoints_list = []
         vehicle_type = ""
@@ -220,8 +224,26 @@ class LogLoader(QThread):
                     ['TimeUS', 'LiftMax', 'BatVolt', 'ThLimit', 'ThrOut'])
 
             elif mtype == 'QTUN':
+                # ArduPlane Log.cpp: TimeUS,ThI,ABst,ThO,ThH,DAlt,Alt,BAlt,
+                #                    DCRt,CRt,TMix,Trn,Ast
+                # Trn = transition state, Ast = assist flags bitmask
                 self._append(qtun_acc, msg,
-                    ['TimeUS', 'Tilt', 'Dsired', 'Ang', 'Dist'])
+                    ['TimeUS', 'ThI', 'ABst', 'ThO', 'ThH', 'DAlt', 'Alt',
+                     'BAlt', 'DCRt', 'CRt', 'TMix', 'Trn', 'Ast'])
+
+            elif mtype == 'QPOS':
+                # QuadPlane position-control state (VTOL approach / landing)
+                self._append(qpos_acc, msg,
+                    ['TimeUS', 'State', 'Dist', 'TSpd', 'TAcc', 'OShoot'])
+
+            elif mtype == 'TILT':
+                # Tiltrotor tilt angles, degrees (0 = vertical, 90 = horizontal)
+                self._append(tilt_acc, msg, ['TimeUS', 'Tilt', 'FL', 'FR'])
+
+            elif mtype == 'STAT':
+                self._append(stat_acc, msg,
+                    ['TimeUS', 'isFlying', 'isFlyProb', 'Armed', 'Safety',
+                     'Crash', 'Still', 'Stage'])
 
             elif mtype == 'EV':
                 # ARM=10, DISARM=11
@@ -259,6 +281,7 @@ class LogLoader(QThread):
 
             elif mtype == 'MSG':
                 txt = getattr(msg, 'Message', '')
+                messages.append((int(getattr(msg, 'TimeUS', 0)), txt))
                 if not vehicle_type and any(v in txt for v in
                         ['ArduPlane', 'ArduCopter', 'ArduRover', 'ArduSub', 'AntennaTracker']):
                     for v in ['ArduPlane', 'ArduCopter', 'ArduRover', 'ArduSub']:
@@ -298,6 +321,10 @@ class LogLoader(QThread):
         log.arsp = self._to_arrays(arsp_acc)
         log.motb = self._to_arrays(motb_acc)
         log.qtun = self._to_arrays(qtun_acc)
+        log.qpos = self._to_arrays(qpos_acc)
+        log.tilt = self._to_arrays(tilt_acc)
+        log.stat = self._to_arrays(stat_acc)
+        log.messages = messages
 
         # ── Derived fields ────────────────────────────────────
         self._compute_derived(log)

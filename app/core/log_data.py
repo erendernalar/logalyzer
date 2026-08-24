@@ -91,7 +91,17 @@ class LogData:
     # TimeUS, LiftMax, BatVolt, ThLimit, ThrOut
 
     qtun: dict = field(default_factory=dict)
-    # TimeUS, Tilt, Dsired, Ang, Dist  (QuadPlane transition tuning — optional)
+    # TimeUS, ThI, ABst, ThO, ThH, DAlt, Alt, BAlt, DCRt, CRt, TMix, Trn, Ast
+    # Trn = transition state (see transition_analyzer), Ast = assist bitmask
+
+    qpos: dict = field(default_factory=dict)
+    # TimeUS, State, Dist, TSpd, TAcc, OShoot  (QuadPlane VTOL position control)
+
+    tilt: dict = field(default_factory=dict)
+    # TimeUS, Tilt, FL, FR  — degrees, 0 = vertical, 90 = horizontal (tiltrotor only)
+
+    stat: dict = field(default_factory=dict)
+    # TimeUS, isFlying, isFlyProb, Armed, Safety, Crash, Still, Stage
 
     # ── Mission waypoints ──────────────────────────────────
     waypoints: list = field(default_factory=list)
@@ -99,6 +109,9 @@ class LogData:
 
     # ── Events ─────────────────────────────────────────────
     events: list = field(default_factory=list)
+
+    # ── Raw MSG text: list of (time_us, text) ──────────────
+    messages: list = field(default_factory=list)
 
     # ── Parameters ─────────────────────────────────────────
     params: dict = field(default_factory=dict)

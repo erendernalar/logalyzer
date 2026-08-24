@@ -108,7 +108,13 @@ _FIELD_GROUPS = [
                                    ('C7', 'Ch 7'), ('C8', 'Ch 8'), ('C9', 'Ch 9'),
                                    ('C10', 'Ch 10'), ('C11', 'Ch 11'), ('C12', 'Ch 12'),
                                    ('C13', 'Ch 13'), ('C14', 'Ch 14')]),
-    ('VTUN (VTOL)',       'qtun', [('Tilt', 'Tilt °'), ('Dsired', 'Des Tilt °'), ('Ang', 'Ang °'), ('Dist', 'Dist (m)')]),
+    ('QTUN (VTOL)',      'qtun', [('ThI', 'Thr In'), ('ThO', 'Thr Out'), ('ThH', 'Thr Hover'),
+                                   ('DAlt', 'Des Alt (m)'), ('Alt', 'Alt (m)'), ('BAlt', 'Baro Alt (m)'),
+                                   ('DCRt', 'Des Climb (m/s)'), ('CRt', 'Climb (m/s)'),
+                                   ('Trn', 'Transition State'), ('Ast', 'Assist Flags')]),
+    ('TILT (Tiltrotor)', 'tilt', [('Tilt', 'Tilt °'), ('FL', 'Front L °'), ('FR', 'Front R °')]),
+    ('QPOS (VTOL Pos)',  'qpos', [('State', 'PosCtrl State'), ('Dist', 'Dist (m)'),
+                                   ('TSpd', 'Target Spd (m/s)'), ('TAcc', 'Target Acc (m/s²)')]),
 ]
 
 

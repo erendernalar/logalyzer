@@ -22,14 +22,69 @@ _Q_MODES = {
     'QAUTOTUNE', 'QACRO', 'QBRAKE',
 }
 
-_FWD  = 'Forward'
-_BACK = 'Back'
+# ── VTOL state machine constants ─────────────────────────────────────────────
+# These mirror ArduPlane exactly; see the reconstruction note in _build_states.
+
+_S_UNDEF, _S_MC, _S_T_FW, _S_T_MC, _S_FW = 0, 1, 2, 3, 4
+_S_NAME = {_S_UNDEF: 'UNDEFINED', _S_MC: 'MC', _S_T_FW: 'TRANSITION_TO_FW',
+           _S_T_MC: 'TRANSITION_TO_MC', _S_FW: 'FW'}
+
+# SLT_Transition::State — ArduPlane/transition.h
+_SLT_AIRSPEED_WAIT, _SLT_TIMER, _SLT_DONE = 0, 1, 2
+# Tailsitter_Transition::State — ArduPlane/tailsitter.h  (NOTE: value 1 is a
+# *back* transition here, unlike SLT where it is a forward phase)
+_TS_ANGLE_WAIT_FW, _TS_ANGLE_WAIT_VTOL, _TS_DONE = 0, 1, 2
+# QuadPlane::position_control_state — ArduPlane/quadplane.h
+_QPOS_NONE, _QPOS_APPROACH, _QPOS_AIRBRAKE, _QPOS_POSITION1 = 0, 1, 2, 3
+
+# QTUN.Ast bitmask — ArduPlane/quadplane.cpp log_assistance_flags
+_AST_ACTIVE, _AST_FORCED, _AST_SPEED = 1 << 0, 1 << 1, 1 << 2
+_AST_ALT, _AST_ANGLE, _AST_FW_FORCE, _AST_SPIN = 1 << 3, 1 << 4, 1 << 5, 1 << 6
+_AST_NAMES = [(_AST_SPEED, 'speed'), (_AST_ALT, 'alt'), (_AST_ANGLE, 'angle'),
+              (_AST_FORCED, 'forced'), (_AST_FW_FORCE, 'fw_force'),
+              (_AST_SPIN, 'spin')]
+
+# Table columns: (header, takes leftover width)
+_COLUMNS = [
+    ('#',           False),
+    ('Type',        False),
+    ('Start',       False),
+    ('Mode Change', False),
+    ('To Aspd',     False),
+    ('Dur',         False),
+    ('Result',      True),
+    ('Alt',         False),
+    ('Spd In',      False),
+    ('Spd Out',     False),
+    ('Source',      False),
+]
+
+# Transition kinds shown in the table
+_K_FWD    = 'Forward'
+_K_BACK_A = 'Back (auto)'
+_K_BACK_M = 'Back (manual)'
+_K_ASSIST = 'Assist'
+
+# Ground speed (m/s) at or below which a manual back transition counts as
+# "slowed to hover", and how long it must stay there.
+_HOVER_SPD_MS  = 2.0
+_HOVER_HOLD_S  = 1.0
+_DECEL_LIMIT_S = 30.0
 
 # Colors for map segments (must be CSS hex strings)
 _C_Q   = '#3FB950'   # green  — Q-mode
 _C_FW  = '#58A6FF'   # blue   — FW-mode
 _C_FWD = '#F85149'   # red    — forward transition phase
 _C_BCK = '#FF9F43'   # orange — back transition phase
+_C_AST = '#BC8CFF'   # purple — assist re-transition (no mode change)
+
+# Result column
+_C_OK   = '#3FB950'  # green
+_C_WARN = '#D29922'  # amber
+_C_FAIL = '#F85149'  # red
+
+_R_OK, _R_WARN, _R_FAIL, _R_UNKNOWN = 'ok', 'warn', 'fail', 'unknown'
+_R_COLOR = {_R_OK: _C_OK, _R_WARN: _C_WARN, _R_FAIL: _C_FAIL}
 
 
 def _is_q(mode: str) -> bool:
@@ -63,11 +118,11 @@ class TimelineWidget(QWidget):
 
         def t2x(t): return int(t / self._total_s * W)
 
+        color_map = {
+            'q': _C_Q, 'fw': _C_FW, 'fwd_tr': _C_FWD, 'back_tr': _C_BCK,
+        }
         for start_s, end_s, seg_type, _ in self._segments:
             x1, x2 = t2x(start_s), t2x(end_s)
-            color_map = {
-                'q': _C_Q, 'fw': _C_FW, 'fwd_tr': _C_FWD, 'back_tr': _C_BCK
-            }
             c = QColor(color_map.get(seg_type, COLORS['border']))
             c.setAlpha(200)
             p.fillRect(x1, bar_y, max(x2 - x1, 1), bar_h, c)
@@ -89,11 +144,6 @@ class TimelineWidget(QWidget):
             mins, secs = int(t // 60), int(t % 60)
             p.drawText(x + 2, bar_y + bar_h + 13, f'{mins}:{secs:02d}')
 
-        p.setFont(QFont('Segoe UI', 8))
-        for label, color in [('Q-mode', _C_Q), ('FW-mode', _C_FW),
-                              ('Fwd Tr.', _C_FWD), ('Back Tr.', _C_BCK)]:
-            pass  # legend below is handled by a QLabel
-
         p.end()
 
 
@@ -102,19 +152,25 @@ class TimelineWidget(QWidget):
 def _make_transition_map_html(segments_geo, transitions, home_lat, home_lng):
     """
     segments_geo: list of {points:[[lat,lng],...], color:str, label:str}
-    transitions:  list of {lat, lng, direction, duration_s, num}
+    transitions:  list of {lat, lng, kind, duration_s, source, num}
     """
     segs_json = json.dumps([
         {'pts': s['points'], 'color': s['color'], 'label': s['label']}
         for s in segments_geo
     ])
+    _kind_color = {
+        _K_FWD: _C_FWD, _K_BACK_A: _C_BCK, _K_BACK_M: _C_BCK, _K_ASSIST: _C_AST,
+    }
     markers_json = json.dumps([
         {
             'lat': t['lat'], 'lng': t['lng'],
-            'dir': t['direction'],
-            'dur': round(t['duration_s'], 1),
+            'dir': t['kind'],
+            'dur': ('%.1f s' % t['duration_s']) if t['duration_s'] is not None else '—',
+            'src': t['result_text'],
+            'ok': {_R_OK: '✓', _R_WARN: '⚠', _R_FAIL: '✗'}.get(t['result'], '?'),
+            'okcolor': _R_COLOR.get(t['result'], '#8B949E'),
             'num': t['num'],
-            'color': _C_FWD if t['direction'] == _FWD else _C_BCK,
+            'color': _kind_color.get(t['kind'], _C_FW),
         }
         for t in transitions if t['lat'] is not None
     ])
@@ -217,7 +273,8 @@ markers.forEach(function(m) {{
   var mk = L.marker([m.lat, m.lng], {{icon:icon}}).addTo(map);
   mk.bindPopup(
     '<div class="popup-box"><b>#' + m.num + ' ' + m.dir + '</b><br>' +
-    'Duration: ' + m.dur + ' s</div>'
+    'Duration: ' + m.dur + '<br>' +
+    '<span style=\"color:' + m.okcolor + '\">' + m.ok + ' ' + m.src + '</span></div>'
   );
 }});
 
@@ -243,6 +300,11 @@ class TransitionAnalyzerModule(BaseModule):
     def __init__(self):
         self._widget   = None
         self._log_data = None
+        self._transitions = []
+        self._state_series = None
+        self._assists = []
+        self._assists = []
+        self._spd_src = 'none'
 
     # ── BaseModule interface ─────────────────────────────────
 
@@ -269,7 +331,7 @@ class TransitionAnalyzerModule(BaseModule):
         )
         stats_row = QHBoxLayout(stats_box)
         stats_row.setContentsMargins(16, 8, 16, 12)
-        stats_row.setSpacing(32)
+        stats_row.setSpacing(28)
 
         self._stat_labels = {}
         for key, label in [
@@ -277,6 +339,8 @@ class TransitionAnalyzerModule(BaseModule):
             ('fwd_avg',  'Avg Fwd Duration'),
             ('back_avg', 'Avg Back Duration'),
             ('longest',  'Longest Transition'),
+            ('done',     'Completed'),
+            ('assist',   'Assist Events'),
         ]:
             col = QVBoxLayout(); col.setSpacing(2)
             k = QLabel(label.upper())
@@ -293,7 +357,8 @@ class TransitionAnalyzerModule(BaseModule):
             f'<span style="color:{_C_Q}">&#9632; Q-mode</span>&nbsp;&nbsp;'
             f'<span style="color:{_C_FW}">&#9632; FW-mode</span>&nbsp;&nbsp;'
             f'<span style="color:{_C_FWD}">&#9632; Fwd Transition</span>&nbsp;&nbsp;'
-            f'<span style="color:{_C_BCK}">&#9632; Back Transition</span>'
+            f'<span style="color:{_C_BCK}">&#9632; Back Transition</span>&nbsp;&nbsp;'
+            f'<span style="color:{_C_AST}">&#9632; Assist Re-transition</span>'
         )
         legend.setStyleSheet(f'font-size:11px; background:transparent; padding:0 2px;')
         layout.addWidget(legend)
@@ -308,11 +373,13 @@ class TransitionAnalyzerModule(BaseModule):
         splitter.setStyleSheet(f'QSplitter::handle {{ background:{COLORS["border"]}; }}')
 
         # Table
-        self._table = QTableWidget(0, 8)
-        self._table.setHorizontalHeaderLabels([
-            '#', 'Direction', 'From Mode', 'To Mode', 'Duration', 'Alt (m)', 'Spd Start', 'Spd End',
-        ])
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._table = QTableWidget(0, len(_COLUMNS))
+        self._table.setHorizontalHeaderLabels([c[0] for c in _COLUMNS])
+        hdr = self._table.horizontalHeader()
+        hdr.setMinimumSectionSize(44)
+        for i, (_, stretch) in enumerate(_COLUMNS):
+            hdr.setSectionResizeMode(
+                i, QHeaderView.Stretch if stretch else QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setStyleSheet(
             f'QHeaderView::section {{ background-color:{COLORS["bg_tertiary"]};'
             f' color:{COLORS["text_secondary"]}; font-size:11px; font-weight:bold;'
@@ -355,6 +422,8 @@ class TransitionAnalyzerModule(BaseModule):
 
     def clear(self) -> None:
         self._log_data = None
+        self._transitions = []
+        self._state_series = None
         self._table.setRowCount(0)
         self._timeline.set_data([], 1.0)
         for v in self._stat_labels.values():
@@ -364,25 +433,266 @@ class TransitionAnalyzerModule(BaseModule):
         if self._webview:
             self._webview.setHtml(self._placeholder_html())
 
-    # ── Speed settling ───────────────────────────────────────
+    # ── Channel helpers ──────────────────────────────────────
 
-    def _find_speed_settled(self, spd_t, spd_arr, start_us, direction,
-                            max_window_s=60.0, flat_window_s=3.0, flat_thresh=0.5):
-        t0    = float(start_us)
-        t_end = t0 + max_window_s * 1e6
-        mask  = (spd_t >= t0) & (spd_t <= t_end)
-        t_seg   = spd_t[mask]
-        spd_seg = spd_arr[mask]
-        if len(t_seg) < 4:
+    @staticmethod
+    def _chan(d, *fields):
+        """[t_us, f1, f2, …] for sensor instance 0 only, sorted by time.
+
+        The loader keeps every instance of a message interleaved in one array
+        (two baros, two airspeed sensors, …). Anything that interpolates or
+        takes a standard deviation has to pick one instance first, or it reads
+        two sensors as a single very noisy one.
+        """
+        if 'TimeUS' not in d or len(d['TimeUS']) == 0:
             return None
-        win_us = flat_window_s * 1e6
+        n = len(d['TimeUS'])
+        if any(f not in d or len(d[f]) != n for f in fields):
+            return None
+        if 'I' in d and len(d['I']) == n:
+            m = d['I'].astype(np.int32) == 0
+            if m.sum() < 2:
+                m = np.ones(n, dtype=bool)
+        else:
+            m = np.ones(n, dtype=bool)
+        t = d['TimeUS'][m].astype(np.float64)
+        order = np.argsort(t, kind='stable')
+        out = [t[order]]
+        for f in fields:
+            out.append(d[f][m][order].astype(np.float64))
+        return out
+
+    @staticmethod
+    def _step(sample_t, ev_t, ev_v, default):
+        """Value of a right-continuous step function at each sample time."""
+        vals = np.asarray(ev_v)
+        out = np.full(len(sample_t), default, dtype=vals.dtype)
+        if len(ev_t) == 0:
+            return out
+        idx = np.searchsorted(np.asarray(ev_t, dtype=np.float64),
+                              np.asarray(sample_t, dtype=np.float64),
+                              side='right') - 1
+        ok = idx >= 0
+        out[ok] = vals[idx[ok]]
+        return out
+
+    @staticmethod
+    def _at(t_us, xp, fp):
+        """np.interp guarded against an empty or single-sample channel."""
+        if xp is None or len(xp) == 0:
+            return None
+        return float(np.interp(float(t_us), xp, fp))
+
+    # ── VTOL state reconstruction ────────────────────────────
+
+    def _build_states(self, log, mode_events):
+        """Rebuild the vehicle's MAV_VTOL_STATE at every QTUN sample.
+
+        This is a direct port of ArduPlane's own Transition::get_mav_vtol_state()
+        — the function that fills the EXTENDED_SYS_STATE telemetry message, which
+        is never written to a dataflash log. Every input it uses *is* logged, so
+        the state can be reconstructed exactly rather than inferred from speed:
+
+            SLT (quadplane / tiltrotor)     ArduPlane/quadplane.cpp
+                in VTOL mode  -> T_MC if QPOS is AIRBRAKE or POSITION1 else MC
+                otherwise     -> T_FW while Trn is AIRSPEED_WAIT or TIMER, else FW
+
+            Tailsitter                      ArduPlane/tailsitter.cpp
+                Trn ANGLE_WAIT_VTOL -> T_MC
+                Trn DONE            -> FW
+                Trn ANGLE_WAIT_FW   -> MC if in a VTOL mode else T_FW
+
+        Returns None when the log has no QTUN (not a QuadPlane, or too old).
+        """
+        q = self._chan(log.qtun, 'Trn', 'Ast')
+        if q is None or len(q[0]) < 2:
+            return None
+        qt, trn, ast = q[0], q[1].astype(np.int32), q[2].astype(np.int32)
+
+        params = log.params or {}
+        tailsitter = float(params.get('Q_TAILSIT_ENABLE', 0)) >= 1
+
+        # Mode class at each sample
+        if mode_events:
+            ev_t = np.array([e.time_us for e in mode_events], dtype=np.float64)
+            ev_q = np.array([_is_q(self._mode_name(e)) for e in mode_events], dtype=bool)
+            in_q_mode = self._step(qt, ev_t, ev_q, bool(ev_q[0]))
+        else:
+            in_q_mode = np.zeros(len(qt), dtype=bool)
+
+        # QuadPlane position-control state (only logged during automatic
+        # VTOL approaches and landings)
+        qp = self._chan(log.qpos, 'State')
+        if qp is not None:
+            qpos = self._step(qt, qp[0], qp[1].astype(np.int32), _QPOS_NONE)
+        else:
+            qpos = np.full(len(qt), _QPOS_NONE, dtype=np.int32)
+
+        # in_vtol_mode(): a VTOL mode, or an automatic VTOL land sequence that
+        # has progressed past the fixed-wing APPROACH/AIRBRAKE phases.
+        in_vtol = in_q_mode.copy()
+        land_seq = (~in_q_mode) & (qpos >= _QPOS_APPROACH)
+        if land_seq.any():
+            in_vtol = np.where(
+                land_seq,
+                (qpos != _QPOS_APPROACH) & (qpos != _QPOS_AIRBRAKE),
+                in_vtol)
+
+        if tailsitter:
+            st = np.where(
+                trn == _TS_ANGLE_WAIT_VTOL, _S_T_MC,
+                np.where(trn == _TS_DONE, _S_FW,
+                         np.where(in_vtol, _S_MC, _S_T_FW)))
+        else:
+            st = np.where(
+                in_vtol,
+                np.where((qpos == _QPOS_AIRBRAKE) | (qpos == _QPOS_POSITION1),
+                         _S_T_MC, _S_MC),
+                np.where(trn <= _SLT_TIMER, _S_T_FW, _S_FW))
+
+        # Armed state, so mode switches on the ground are not counted as
+        # transitions. STAT is authoritative; ARM/DISARM events are the fallback.
+        sa = self._chan(log.stat, 'Armed')
+        if sa is not None and len(sa[0]) > 2:
+            armed = self._step(qt, sa[0], sa[1].astype(np.int32) == 1, False)
+        else:
+            arm_ev = sorted([e for e in log.events
+                             if e.event_type in ('arm', 'disarm')],
+                            key=lambda e: e.time_us)
+            if arm_ev:
+                armed = self._step(
+                    qt,
+                    np.array([e.time_us for e in arm_ev], dtype=np.float64),
+                    np.array([e.event_type == 'arm' for e in arm_ev], dtype=bool),
+                    False)
+            else:
+                armed = np.ones(len(qt), dtype=bool)
+
+        return {
+            't': qt, 'state': st.astype(np.int32), 'trn': trn, 'ast': ast,
+            'in_vtol': in_vtol, 'tailsitter': tailsitter, 'armed': armed,
+            'has_qpos': qp is not None,
+        }
+
+    @staticmethod
+    def _runs(states):
+        """[(state, first_idx, last_idx)] for each run of equal state."""
+        if len(states) == 0:
+            return []
+        cut = np.flatnonzero(np.diff(states)) + 1
+        starts = np.concatenate(([0], cut))
+        ends = np.concatenate((cut, [len(states)]))
+        return [(int(states[a]), int(a), int(b - 1)) for a, b in zip(starts, ends)]
+
+    @staticmethod
+    def _mode_name(ev):
+        d = ev.detail
+        return d[6:].strip() if d.startswith('Mode: ') else d.strip()
+
+    def _modes_around(self, mode_events, t_us, window_s=2.0):
+        """(from_mode, to_mode) for a transition at t_us.
+
+        If no mode change happened within window_s the transition was not
+        commanded by the pilot (assist re-transition), so both are the same.
+        """
+        if not mode_events:
+            return '—', '—'
+        idx = -1
+        for i, ev in enumerate(mode_events):
+            if ev.time_us <= t_us:
+                idx = i
+            else:
+                break
+        if idx < 0:
+            return '—', self._mode_name(mode_events[0])
+        cur = self._mode_name(mode_events[idx])
+        if abs(t_us - mode_events[idx].time_us) > window_s * 1e6:
+            return cur, cur
+        prev = self._mode_name(mode_events[idx - 1]) if idx > 0 else '—'
+        return prev, cur
+
+    # ── Physical deceleration (manual back transitions) ──────
+
+    def _decel_time_s(self, gt, gs, t0_us, t_limit_us):
+        """Seconds until ground speed drops to hover and stays there.
+
+        ArduPilot has no back-transition state for a manual mode switch — the
+        firmware reports MC immediately — so this is a derived physical
+        measurement, not a state duration, and is labelled as such.
+        Returns None if it never settles inside the window (never a guess).
+        """
+        if gt is None:
+            return None
+        t_end = min(float(t_limit_us), float(t0_us) + _DECEL_LIMIT_S * 1e6)
+        m = (gt >= float(t0_us)) & (gt <= t_end)
+        t_seg, v_seg = gt[m], gs[m]
+        if len(t_seg) < 3:
+            return None
+        hold_us = _HOVER_HOLD_S * 1e6
         for i in range(len(t_seg)):
-            wm = (t_seg >= t_seg[i]) & (t_seg <= t_seg[i] + win_us)
-            if wm.sum() < 3:
+            if v_seg[i] > _HOVER_SPD_MS:
                 continue
-            if spd_seg[wm].std() < flat_thresh:
-                return int(t_seg[i])
-        return int(t_seg[-1])
+            wm = (t_seg >= t_seg[i]) & (t_seg <= t_seg[i] + hold_us)
+            if wm.sum() < 2:
+                break
+            if (v_seg[wm] <= _HOVER_SPD_MS).all():
+                return (t_seg[i] - float(t0_us)) / 1e6
+        return None
+
+    @staticmethod
+    def _assist_events(states):
+        """Rising edges of QTUN.Ast bit0, with the reason bits that came with them.
+
+        Each edge is one moment VTOL assist kicked in during forward flight —
+        these have no mode change, so a mode-based analysis cannot see them.
+        """
+        if states is None:
+            return []
+        ast = states['ast']
+        active = (ast & _AST_ACTIVE) != 0
+        if len(active) < 2:
+            return []
+        edges = np.flatnonzero((~active[:-1]) & active[1:]) + 1
+        out = []
+        for i in edges:
+            if not bool(states['armed'][i]):
+                continue
+            flags = int(ast[i])
+            why = [name for bit, name in _AST_NAMES if flags & bit]
+            out.append({'t_us': float(states['t'][i]),
+                        'reasons': why or ['unspecified']})
+        return out
+
+    # ── MSG cross-check ──────────────────────────────────────
+
+    @staticmethod
+    def _msg_marks(log):
+        """Transition timestamps announced in the MSG text stream.
+
+        An independent second source: where it disagrees with the reconstructed
+        state machine the row is flagged rather than silently trusted.
+        """
+        out = {'started': [], 'reached': [], 'done': [], 'failed': []}
+        for t_us, txt in (log.messages or []):
+            low = txt.lower()
+            if 'transition started' in low:
+                out['started'].append(t_us)
+            elif 'transition airspeed reached' in low:
+                out['reached'].append(t_us)
+            elif 'transition done' in low:
+                out['done'].append(t_us)
+            elif 'transition failed' in low:
+                out['failed'].append(t_us)
+        return out
+
+    @staticmethod
+    def _nearest(marks, t_us, tol_s=2.0):
+        best = None
+        for m in marks:
+            d = abs(m - t_us) / 1e6
+            if d <= tol_s and (best is None or d < best):
+                best = d
+        return best
 
     # ── Main analysis ────────────────────────────────────────
 
@@ -396,175 +706,257 @@ class TransitionAnalyzerModule(BaseModule):
             key=lambda e: e.time_us,
         )
 
-        def mode_name(ev):
-            d = ev.detail
-            return d[6:].strip() if d.startswith('Mode: ') else d.strip()
-
-        # ── Speed source ─────────────────────────────────────
-        has_arsp = ('TimeUS' in log.arsp and 'Airspeed' in log.arsp
-                    and len(log.arsp['Airspeed']) > 4)
-        has_gps  = ('TimeUS' in log.gps and 'Spd' in log.gps
-                    and len(log.gps['Spd']) > 4)
-
-        if has_arsp:
-            arsp_t   = log.arsp['TimeUS'].astype(np.float64)
-            arsp_spd = log.arsp['Airspeed'].astype(np.float64)
-            if 'U' in log.arsp:
-                u_mask = log.arsp['U'].astype(np.int32) == 1
-                if u_mask.sum() > 4:
-                    arsp_t   = arsp_t[u_mask]
-                    arsp_spd = arsp_spd[u_mask]
-            spd_t   = arsp_t
-            spd_arr = arsp_spd
-            spd_source = 'airspeed'
-        elif has_gps:
-            spd_t   = log.gps['TimeUS'].astype(np.float64)
-            spd_arr = log.gps['Spd'].astype(np.float64)
-            spd_source = 'GPS'
-        else:
-            spd_t = spd_arr = None
-            spd_source = 'none'
-
-        has_speed = spd_t is not None and len(spd_t) > 4
-
-        # ── Baro altitude ────────────────────────────────────
-        has_baro = ('TimeUS' in log.baro and 'Alt' in log.baro
-                    and len(log.baro['Alt']) > 4)
-        if has_baro:
-            baro_t   = log.baro['TimeUS'].astype(np.float64)
-            baro_alt = log.baro['Alt'].astype(np.float64)
-
-        # ── GPS track for map ─────────────────────────────────
-        has_gps_pos = ('TimeUS' in log.gps and 'Lat' in log.gps
-                       and len(log.gps['Lat']) > 4)
-        if has_gps_pos:
-            gps_t   = log.gps['TimeUS'].astype(np.float64)
-            gps_lat = log.gps['Lat'].astype(np.float64)
-            gps_lng = log.gps['Lng'].astype(np.float64)
-            if 'Status' in log.gps:
-                fix = log.gps['Status'] >= 3
-                gps_t   = gps_t[fix]
-                gps_lat = gps_lat[fix]
-                gps_lng = gps_lng[fix]
-
-        # ── QTUN tilt ────────────────────────────────────────
-        has_qtun = ('TimeUS' in log.qtun and 'Tilt' in log.qtun
-                    and len(log.qtun['Tilt']) > 4)
-        if has_qtun:
-            qtun_t    = log.qtun['TimeUS'].astype(np.float64)
-            qtun_tilt = log.qtun['Tilt'].astype(np.float64)
-
-        # ── Detect transitions ───────────────────────────────
-        transitions = []
-        for i in range(len(mode_events) - 1):
-            a, b   = mode_events[i], mode_events[i + 1]
-            m_a, m_b = mode_name(a), mode_name(b)
-            if _is_q(m_a) == _is_q(m_b):
-                continue
-
-            direction    = _FWD if _is_q(m_a) else _BACK
-            start_us     = a.time_us
-            next_mode_us = b.time_us
-
-            end_us = None
-            method = 'mode change'
-
-            if has_speed:
-                s = self._find_speed_settled(
-                    spd_t, spd_arr, start_us, direction,
-                    max_window_s=min(60.0, (next_mode_us - start_us) / 1e6),
-                )
-                if s is not None:
-                    end_us = s
-                    method = f'{spd_source} settled'
-
-            if has_qtun and end_us is None:
-                t0f   = float(start_us)
-                t_max = float(next_mode_us)
-                mask  = (qtun_t >= t0f) & (qtun_t <= t_max)
-                if mask.sum() > 2:
-                    tilt_seg = qtun_tilt[mask]
-                    t_seg    = qtun_t[mask]
-                    target   = 0.0 if direction == _FWD else 100.0
-                    settled  = np.where(np.abs(tilt_seg - target) < 5.0)[0]
-                    if len(settled) > 0:
-                        end_us = int(t_seg[settled[0]])
-                        method = 'tilt settled'
-
-            if end_us is None:
-                end_us = next_mode_us
-                method = 'mode change'
-
-            duration_s = (end_us - start_us) / 1_000_000.0
-
-            spd_start = spd_end = alt_m = tr_lat = tr_lng = None
-            if has_speed:
-                spd_start = float(np.interp(float(start_us), spd_t, spd_arr))
-                spd_end   = float(np.interp(float(end_us),   spd_t, spd_arr))
-            if has_baro:
-                alt_m = float(np.interp(float(start_us), baro_t, baro_alt))
-            if has_gps_pos and len(gps_t) > 0:
-                tr_lat = float(np.interp(float(start_us), gps_t, gps_lat))
-                tr_lng = float(np.interp(float(start_us), gps_t, gps_lng))
-
-            transitions.append({
-                'num':        len(transitions) + 1,
-                'direction':  direction,
-                'from_mode':  m_a,
-                'to_mode':    m_b,
-                'start_us':   start_us,
-                'end_us':     end_us,
-                'duration_s': duration_s,
-                'spd_start':  spd_start,
-                'spd_end':    spd_end,
-                'alt_m':      alt_m,
-                'method':     method,
-                'lat':        tr_lat,
-                'lng':        tr_lng,
-            })
-
-        # ── Build timeline segments ───────────────────────────
-        t0     = log.start_time_us
-        total_s = log.duration_seconds or 1.0
-        # Build a flat list of segments including transition sub-phases
-        tl_segs = []
-        tr_lookup = {tr['start_us']: tr for tr in transitions}
-
-        for i, ev in enumerate(mode_events):
-            seg_start = ev.time_us
-            seg_end   = mode_events[i + 1].time_us if i + 1 < len(mode_events) else log.end_time_us
-            m = mode_name(ev)
-            seg_type = 'q' if _is_q(m) else 'fw'
-
-            # Check if a transition starts here
-            if seg_start in tr_lookup:
-                tr = tr_lookup[seg_start]
-                tr_end = tr['end_us']
-                tr_type = 'fwd_tr' if tr['direction'] == _FWD else 'back_tr'
-                tl_segs.append((
-                    (seg_start - t0) / 1e6,
-                    (tr_end    - t0) / 1e6,
-                    tr_type, tr['direction'],
-                ))
-                if tr_end < seg_end:
-                    tl_segs.append((
-                        (tr_end  - t0) / 1e6,
-                        (seg_end - t0) / 1e6,
-                        seg_type, m,
-                    ))
+        # ── Speed / altitude / position channels ─────────────
+        arsp = self._chan(log.arsp, 'Airspeed', 'U')
+        if arsp is not None:
+            use = arsp[2].astype(np.int32) == 1
+            if use.sum() > 4:
+                arsp = [arsp[0][use], arsp[1][use]]
             else:
-                tl_segs.append((
-                    (seg_start - t0) / 1e6,
-                    (seg_end   - t0) / 1e6,
-                    seg_type, m,
-                ))
+                arsp = [arsp[0], arsp[1]]
+            if len(arsp[0]) <= 4:
+                arsp = None
 
-        # ── Placeholder if no transitions ─────────────────────
+        gps = self._chan(log.gps, 'Spd', 'Lat', 'Lng', 'Status')
+        gt = gs = glat = glng = None
+        if gps is not None:
+            fix = gps[4].astype(np.int32) >= 3
+            if fix.sum() > 4:
+                gt, gs, glat, glng = gps[0][fix], gps[1][fix], gps[2][fix], gps[3][fix]
+            elif len(gps[0]) > 4:
+                gt, gs, glat, glng = gps[0], gps[1], gps[2], gps[3]
+
+        baro = self._chan(log.baro, 'Alt')
+        bt, balt = (baro[0], baro[1]) if baro is not None and len(baro[0]) > 4 else (None, None)
+
+        # Airspeed for the table if we have it, else GPS ground speed
+        if arsp is not None:
+            spd_t, spd_v, self._spd_src = arsp[0], arsp[1], 'airspeed'
+        elif gt is not None:
+            spd_t, spd_v, self._spd_src = gt, gs, 'GPS'
+        else:
+            spd_t = spd_v = None
+            self._spd_src = 'none'
+
+        # ── Reconstruct the VTOL state machine ───────────────
+        states = self._build_states(log, mode_events)
+        marks = self._msg_marks(log)
+
+        if states is not None:
+            transitions, tl_segs = self._transitions_from_states(
+                log, states, mode_events, marks, gt, gs)
+            self._state_series = states
+            self._assists = self._assist_events(states)
+        else:
+            transitions, tl_segs = self._transitions_from_modes(
+                log, mode_events, gt, gs)
+            self._state_series = None
+            self._assists = []
+
+        # ── Attach per-transition sample values ──────────────
+        for tr in transitions:
+            t0, t1 = tr['start_us'], tr['end_us']
+            tr['spd_start'] = self._at(t0, spd_t, spd_v) if spd_t is not None else None
+            tr['spd_end']   = self._at(t1, spd_t, spd_v) if spd_t is not None else None
+            tr['alt_m']     = self._at(t0, bt, balt) if bt is not None else None
+            tr['lat'] = self._at(t0, gt, glat) if gt is not None else None
+            tr['lng'] = self._at(t0, gt, glng) if gt is not None else None
+
+        self._transitions = transitions
+        self._render(log, transitions, tl_segs, gt, glat, glng, mode_events)
+
+    def _transitions_from_states(self, log, states, mode_events, marks, gt, gs):
+        """Transitions as runs of the reconstructed state series."""
+        qt, st = states['t'], states['state']
+        trn = states['trn']
+        runs = self._runs(st)
+        t0_log = log.start_time_us
+
+        def run_bounds(k):
+            _, a, b = runs[k]
+            start = qt[a]
+            end = qt[runs[k + 1][1]] if k + 1 < len(runs) else qt[b]
+            return float(start), float(end)
+
+        transitions = []
+        tl_segs = []
+        seg_type = {_S_MC: 'q', _S_FW: 'fw', _S_T_FW: 'fwd_tr',
+                    _S_T_MC: 'back_tr', _S_UNDEF: 'fw'}
+
+        for k, (state, a, b) in enumerate(runs):
+            start_us, end_us = run_bounds(k)
+            tl_segs.append(((start_us - t0_log) / 1e6, (end_us - t0_log) / 1e6,
+                            seg_type.get(state, 'fw'), _S_NAME.get(state, '')))
+
+            prev_state = runs[k - 1][0] if k > 0 else None
+            next_state = runs[k + 1][0] if k + 1 < len(runs) else None
+
+            if not bool(states['armed'][a]):
+                continue    # mode switching on the ground is not a transition
+
+            if state == _S_T_FW:
+                # A forward transition proper starts from multicopter flight;
+                # starting from FW means assist re-triggered mid-cruise.
+                kind = _K_ASSIST if prev_state == _S_FW else _K_FWD
+                to_air = None
+                notes = []
+                if not states['tailsitter']:
+                    seg = trn[a:b + 1]
+                    hit = np.flatnonzero(seg == _SLT_TIMER)
+                    if len(hit):
+                        to_air = (float(qt[a + hit[0]]) - start_us) / 1e6
+                    # TIMER -> AIRSPEED_WAIT means airspeed fell back below the
+                    # transition threshold and the timer restarted.
+                    lost = int(np.count_nonzero(
+                        (seg[:-1] == _SLT_TIMER) & (seg[1:] == _SLT_AIRSPEED_WAIT)))
+                    if lost:
+                        notes.append('airspeed lost %d×' % lost)
+                dur_s = (end_us - start_us) / 1e6
+
+                # Q_TRANS_FAIL: the firmware aborts a forward transition that
+                # exceeds the timeout and switches to Q_TRANS_FAIL_ACT.
+                fail_to = float((log.params or {}).get('Q_TRANS_FAIL', 0) or 0)
+                failed_msg = any(start_us <= t <= end_us for t in marks['failed'])
+
+                if failed_msg or (fail_to > 0 and dur_s > fail_to):
+                    result = _R_FAIL
+                    rtext = ('Failed — over Q_TRANS_FAIL (%.0fs)' % fail_to
+                             if fail_to > 0 else 'Failed — time limit')
+                elif next_state != _S_FW:
+                    result = _R_FAIL
+                    rtext = 'Aborted — back to VTOL'
+                elif kind == _K_ASSIST:
+                    result = _R_WARN
+                    rtext = 'Recovered to FW'
+                elif notes:
+                    result = _R_WARN
+                    rtext = 'Completed — ' + ', '.join(notes)
+                else:
+                    result = _R_OK
+                    rtext = 'Completed'
+
+                if kind == _K_ASSIST and result == _R_FAIL and not failed_msg:
+                    rtext = 'Ended in VTOL'
+
+                xchk = self._nearest(marks['started'], start_us)
+                transitions.append(self._mk(
+                    len(transitions) + 1, kind, mode_events, start_us, end_us,
+                    duration_s=dur_s, to_airspeed_s=to_air,
+                    source='QTUN.Trn' + (' ✓msg' if xchk is not None else ''),
+                    xcheck_s=xchk, note=', '.join(notes),
+                    result=result, result_text=rtext))
+
+            elif state == _S_T_MC:
+                if next_state == _S_MC:
+                    result, rtext = _R_OK, 'Completed'
+                else:
+                    result, rtext = _R_FAIL, 'Aborted — returned to forward flight'
+                transitions.append(self._mk(
+                    len(transitions) + 1, _K_BACK_A, mode_events, start_us, end_us,
+                    duration_s=(end_us - start_us) / 1e6,
+                    to_airspeed_s=None, source='QPOS', xcheck_s=None,
+                    result=result, result_text=rtext))
+
+            elif state == _S_MC and prev_state in (_S_FW, _S_T_FW):
+                # Manual back transition: the firmware switches to MC with no
+                # intermediate state, so the state duration is zero by
+                # definition. Report the physical deceleration instead.
+                limit = qt[runs[k + 1][1]] if k + 1 < len(runs) else qt[-1]
+                dec = self._decel_time_s(gt, gs, start_us, limit)
+                if dec is None:
+                    result = _R_UNKNOWN
+                    rtext = 'Never slowed to hover'
+                else:
+                    result = _R_OK
+                    rtext = 'Slowed to hover'
+                transitions.append(self._mk(
+                    len(transitions) + 1, _K_BACK_M, mode_events, start_us,
+                    start_us + (dec or 0.0) * 1e6,
+                    duration_s=dec, to_airspeed_s=None,
+                    source='decel (derived)', xcheck_s=None,
+                    note='firmware reports MC immediately',
+                    result=result, result_text=rtext))
+
+        return transitions, tl_segs
+
+    def _transitions_from_modes(self, log, mode_events, gt, gs):
+        """Fallback for logs without QTUN: mode-class changes only.
+
+        The transition begins when the *new* mode is entered and runs until the
+        next mode change that switches class again — same-class changes in
+        between (QLOITER -> QSTABILIZE) must not truncate it.
+        """
+        transitions = []
+        tl_segs = []
+        t0_log = log.start_time_us
+        if not mode_events:
+            return transitions, tl_segs
+
+        cls = [(e.time_us, _is_q(self._mode_name(e)), self._mode_name(e))
+               for e in mode_events]
+        # collapse runs of the same class
+        flips = [0]
+        for i in range(1, len(cls)):
+            if cls[i][1] != cls[flips[-1]][1]:
+                flips.append(i)
+
+        for j, fi in enumerate(flips):
+            t_start = cls[fi][0]
+            t_end = cls[flips[j + 1]][0] if j + 1 < len(flips) else log.end_time_us
+            is_q = cls[fi][1]
+            tl_segs.append(((t_start - t0_log) / 1e6, (t_end - t0_log) / 1e6,
+                            'q' if is_q else 'fw', cls[fi][2]))
+            if j == 0:
+                continue
+            if is_q:
+                dec = self._decel_time_s(gt, gs, t_start, t_end)
+                transitions.append(self._mk(
+                    len(transitions) + 1, _K_BACK_M, mode_events, t_start,
+                    t_start + (dec or 0.0) * 1e6, duration_s=dec,
+                    to_airspeed_s=None, source='decel (derived)', xcheck_s=None,
+                    note='no QTUN in log',
+                    result=_R_OK if dec is not None else _R_UNKNOWN,
+                    result_text=('Slowed to hover' if dec is not None
+                                 else 'Never slowed to hover')))
+            else:
+                transitions.append(self._mk(
+                    len(transitions) + 1, _K_FWD, mode_events, t_start, t_end,
+                    duration_s=None, to_airspeed_s=None,
+                    source='mode change only', xcheck_s=None,
+                    note='no QTUN in log',
+                    result=_R_UNKNOWN,
+                    result_text='Unknown — no QTUN'))
+        return transitions, tl_segs
+
+    def _mk(self, num, kind, mode_events, start_us, end_us, duration_s,
+            to_airspeed_s, source, xcheck_s, note='',
+            result=_R_OK, result_text='Completed'):
+        frm, to = self._modes_around(mode_events, start_us)
+        return {
+            'num': num, 'kind': kind, 'from_mode': frm, 'to_mode': to,
+            'start_us': int(start_us), 'end_us': int(end_us),
+            'duration_s': duration_s, 'to_airspeed_s': to_airspeed_s,
+            'source': source, 'xcheck_s': xcheck_s, 'note': note,
+            'result': result, 'result_text': result_text,
+            'completed': result == _R_OK,
+            'spd_start': None, 'spd_end': None, 'alt_m': None,
+            'lat': None, 'lng': None,
+        }
+
+    # ── Rendering ────────────────────────────────────────────
+
+    _KIND_COLOR = {
+        _K_FWD: _C_FWD, _K_BACK_A: _C_BCK, _K_BACK_M: _C_BCK, _K_ASSIST: _C_AST,
+    }
+
+    def _render(self, log, transitions, tl_segs, gt, glat, glng, mode_events):
+        total_s = log.duration_seconds or 1.0
+        self._timeline.set_data(tl_segs, total_s)
+
         if not transitions:
             self._table.setRowCount(0)
             self._table.setVisible(False)
             self._placeholder.setVisible(True)
-            self._timeline.set_data(tl_segs, total_s)
             for v in self._stat_labels.values():
                 v.setText('—')
             self._webview.setHtml(self._placeholder_html('No VTOL transitions detected.'))
@@ -573,97 +965,118 @@ class TransitionAnalyzerModule(BaseModule):
         self._table.setVisible(True)
         self._placeholder.setVisible(False)
 
-        # ── Summary stats ────────────────────────────────────
-        fwd_durs  = [t['duration_s'] for t in transitions if t['direction'] == _FWD]
-        back_durs = [t['duration_s'] for t in transitions if t['direction'] == _BACK]
-        self._stat_labels['total'].setText(str(len(transitions)))
+        # ── Summary ──────────────────────────────────────────
+        def durs(kinds):
+            return [t['duration_s'] for t in transitions
+                    if t['kind'] in kinds and t['completed']
+                    and t['duration_s'] is not None]
+
+        fwd  = durs((_K_FWD,))
+        back = durs((_K_BACK_A, _K_BACK_M))
+        assists = getattr(self, '_assists', [])
+        measured = fwd + back
+
+        self._stat_labels['total'].setText(
+            str(len([t for t in transitions if t['kind'] != _K_ASSIST])))
         self._stat_labels['fwd_avg'].setText(
-            f'{sum(fwd_durs)/len(fwd_durs):.1f} s' if fwd_durs else '—')
+            f'{sum(fwd)/len(fwd):.1f} s' if fwd else '—')
         self._stat_labels['back_avg'].setText(
-            f'{sum(back_durs)/len(back_durs):.1f} s' if back_durs else '—')
+            f'{sum(back)/len(back):.1f} s' if back else '—')
         self._stat_labels['longest'].setText(
-            f'{max(t["duration_s"] for t in transitions):.1f} s')
+            f'{max(measured):.1f} s' if measured else '—')
+        real = [t for t in transitions if t['kind'] != _K_ASSIST]
+        n_ok = len([t for t in real if t['result'] == _R_OK])
+        self._stat_labels['done'].setText(f'{n_ok} / {len(real)}' if real else '—')
+        self._stat_labels['assist'].setText(str(len(assists)))
 
-        # ── Timeline ──────────────────────────────────────────
-        self._timeline.set_data(tl_segs, total_s)
-
-        # ── Table ─────────────────────────────────────────────
+        # ── Table ────────────────────────────────────────────
         self._table.setRowCount(len(transitions))
-        fwd_color  = QColor(_C_FWD)
-        back_color = QColor(_C_BCK)
+        t0_log = log.start_time_us
+
+        def cell(text, align=Qt.AlignCenter):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(align)
+            return item
 
         for row, tr in enumerate(transitions):
-            color = fwd_color if tr['direction'] == _FWD else back_color
+            color = QColor(self._KIND_COLOR.get(tr['kind'], _C_FW))
+            rel_s = (tr['start_us'] - t0_log) / 1e6
 
-            def cell(text, align=Qt.AlignCenter):
-                item = QTableWidgetItem(text)
-                item.setTextAlignment(align)
-                return item
+            kind_item = cell(tr['kind'])
+            kind_item.setForeground(color)
+            kind_item.setFont(QFont('Segoe UI', 10, QFont.Bold))
 
-            self._table.setItem(row, 0, cell(str(tr['num'])))
-            dir_item = cell(tr['direction'])
-            dir_item.setForeground(color)
-            dir_item.setFont(QFont('Segoe UI', 10, QFont.Bold))
-            self._table.setItem(row, 1, dir_item)
-            self._table.setItem(row, 2, cell(tr['from_mode']))
-            self._table.setItem(row, 3, cell(tr['to_mode']))
-            self._table.setItem(row, 4, cell(f"{tr['duration_s']:.1f} s"))
-            self._table.setItem(row, 5, cell(
-                f"{tr['alt_m']:.0f}" if tr['alt_m'] is not None else '—'))
-            self._table.setItem(row, 6, cell(
-                f"{tr['spd_start']:.1f}" if tr['spd_start'] is not None else '—'))
-            self._table.setItem(row, 7, cell(
-                f"{tr['spd_end']:.1f}" if tr['spd_end'] is not None else '—'))
+            mark = {_R_OK: '✓', _R_WARN: '⚠', _R_FAIL: '✗'}.get(tr['result'], '?')
+            res_item = cell(f"{mark}  {tr['result_text']}", Qt.AlignVCenter | Qt.AlignLeft)
+            res_item.setForeground(QColor(_R_COLOR.get(tr['result'],
+                                                       COLORS['text_disabled'])))
+            res_item.setFont(QFont('Segoe UI', 10, QFont.Bold))
 
-        # ── Map ───────────────────────────────────────────────
-        if has_gps_pos and len(gps_t) > 1:
-            # Build colored GPS track segments between mode changes
-            seg_boundaries = sorted(set(
-                [int(gps_t[0]), int(gps_t[-1])]
-                + [e.time_us for e in mode_events]
-                + [tr['start_us'] for tr in transitions]
-                + [tr['end_us']   for tr in transitions]
-            ))
+            dur = tr['duration_s']
+            dur_txt = f'{dur:.1f} s' if dur is not None else '—'
+            air = tr['to_airspeed_s']
 
-            # Map from timestamp → color
-            def seg_color_at(us):
-                # Find which phase this timestamp falls in
-                for tr in transitions:
-                    if tr['start_us'] <= us <= tr['end_us']:
-                        return (_C_FWD if tr['direction'] == _FWD else _C_BCK,
-                                f"#{tr['num']} {tr['direction']} transition")
-                # Find mode at this time
-                active_mode = mode_name(mode_events[0]) if mode_events else ''
-                for ev in mode_events:
-                    if ev.time_us <= us:
-                        active_mode = mode_name(ev)
-                return (_C_Q if _is_q(active_mode) else _C_FW, active_mode)
+            src = tr['source']
 
-            segments_geo = []
-            step = max(1, len(gps_t) // 2000)
-            for si in range(len(seg_boundaries) - 1):
-                t_lo = seg_boundaries[si]
-                t_hi = seg_boundaries[si + 1]
-                mask = (gps_t >= t_lo) & (gps_t <= t_hi)
-                pts_idx = np.where(mask)[0][::step]
-                if len(pts_idx) < 2:
-                    # Include at least endpoints
-                    lo_idx = np.searchsorted(gps_t, t_lo)
-                    hi_idx = min(np.searchsorted(gps_t, t_hi), len(gps_t) - 1)
-                    pts_idx = np.array([lo_idx, hi_idx])
-                color, label = seg_color_at(t_lo + 1)
-                pts = [[float(gps_lat[i]), float(gps_lng[i])] for i in pts_idx
-                       if 0 <= i < len(gps_lat)]
-                if len(pts) >= 2:
-                    segments_geo.append({'points': pts, 'color': color, 'label': label})
+            mode_txt = (tr['to_mode'] if tr['from_mode'] == tr['to_mode']
+                        else f"{tr['from_mode']} → {tr['to_mode']}")
 
-            home_lat = float(gps_lat[0])
-            home_lng = float(gps_lng[0])
+            vals = [
+                str(tr['num']),
+                kind_item,
+                f"{int(rel_s // 60)}:{int(rel_s % 60):02d}",
+                mode_txt,
+                f'{air:.1f} s' if air is not None else '—',
+                dur_txt,
+                res_item,
+                f"{tr['alt_m']:.0f}" if tr['alt_m'] is not None else '—',
+                f"{tr['spd_start']:.1f}" if tr['spd_start'] is not None else '—',
+                f"{tr['spd_end']:.1f}" if tr['spd_end'] is not None else '—',
+                src,
+            ]
+            for col, val in enumerate(vals):
+                item = val if isinstance(val, QTableWidgetItem) else cell(val)
+                if tr['note']:
+                    item.setToolTip(tr['note'])
+                self._table.setItem(row, col, item)
 
-            html = _make_transition_map_html(segments_geo, transitions, home_lat, home_lng)
-            self._webview.setHtml(html, _ASSETS_URL)
-        else:
+        # ── Map ──────────────────────────────────────────────
+        if gt is None or len(gt) < 2:
             self._webview.setHtml(self._placeholder_html('No GPS data for map.'))
+            return
+
+        segments_geo = self._map_segments(log, gt, glat, glng, tl_segs)
+        html = _make_transition_map_html(
+            segments_geo, transitions, float(glat[0]), float(glng[0]))
+        self._webview.setHtml(html, _ASSETS_URL)
+
+    def _map_segments(self, log, gt, glat, glng, tl_segs):
+        """Colour the GPS track with the same segments the timeline uses."""
+        color_of = {'q': _C_Q, 'fw': _C_FW, 'fwd_tr': _C_FWD, 'back_tr': _C_BCK}
+        t0_log = log.start_time_us
+        step = max(1, len(gt) // 2000)
+        out = []
+        for start_s, end_s, seg_type, label in tl_segs:
+            t_lo = t0_log + start_s * 1e6
+            t_hi = t0_log + end_s * 1e6
+            idx = np.flatnonzero((gt >= t_lo) & (gt <= t_hi))
+            if len(idx) < 2:
+                lo = int(np.searchsorted(gt, t_lo))
+                hi = int(min(np.searchsorted(gt, t_hi), len(gt) - 1))
+                if hi <= lo:
+                    continue
+                idx = np.array([lo, hi])
+            else:
+                idx = idx[::step]
+                if len(idx) < 2:
+                    continue
+            pts = [[float(glat[i]), float(glng[i])] for i in idx
+                   if 0 <= i < len(glat)]
+            if len(pts) >= 2:
+                out.append({'points': pts,
+                            'color': color_of.get(seg_type, _C_FW),
+                            'label': label})
+        return out
 
     @staticmethod
     def _placeholder_html(msg='Load a VTOL/QuadPlane log to see transition analysis.'):
