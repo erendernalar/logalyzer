@@ -121,6 +121,7 @@ class LogLoader(QThread):
         gps_acc  = self._make_acc()
         pos_acc  = self._make_acc()
         att_acc  = self._make_acc()
+        rate_acc = self._make_acc()
         bat_acc  = self._make_acc()
         baro_acc = self._make_acc()
         rcin_acc = self._make_acc()
@@ -197,6 +198,15 @@ class LogLoader(QThread):
             elif mtype == 'ATT':
                 self._append(att_acc, msg,
                     ['TimeUS', 'DesRoll', 'Roll', 'DesPitch', 'Pitch', 'DesYaw', 'Yaw'])
+
+            elif mtype == 'RATE':
+                # Rate controller: desired vs achieved body rates (deg/s).
+                # Field set varies by vehicle/firmware — take what exists.
+                fields = ['TimeUS'] + [f for f in
+                    ('RDes', 'R', 'ROut', 'PDes', 'P', 'POut',
+                     'YDes', 'Y', 'YOut', 'ADes', 'A', 'AOut')
+                    if hasattr(msg, f)]
+                self._append(rate_acc, msg, fields)
 
             elif mtype == 'BAT':
                 self._append(bat_acc, msg,
@@ -314,6 +324,7 @@ class LogLoader(QThread):
         log.gps  = self._to_arrays(gps_acc)
         log.pos  = self._to_arrays(pos_acc)
         log.att  = self._to_arrays(att_acc)
+        log.rate = self._to_arrays(rate_acc)
         log.bat  = self._to_arrays(bat_acc)
         log.baro = self._to_arrays(baro_acc)
         log.rcin = self._to_arrays(rcin_acc)

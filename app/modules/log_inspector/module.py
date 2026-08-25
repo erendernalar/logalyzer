@@ -276,6 +276,8 @@ class LogInspectorModule(BaseModule):
         self._time_cursor   = None   # InfiniteLine on the graph
         self._stats_box     = None
         self._stats_visible = False
+        self._scale_match   = False   # share one Y scale across all curves
+        self._match_btn     = None
 
     # ── BaseModule interface ─────────────────────────────────
 
@@ -402,6 +404,9 @@ class LogInspectorModule(BaseModule):
         _orig_auto_range = _main_vb.autoRange
         def _patched_auto_range(*args, **kwargs):
             _orig_auto_range(*args, **kwargs)
+            if self._scale_match:
+                self._apply_scale_match()
+                return
             for _, (_, _, extra_vb, _) in self._plot_items.items():
                 if extra_vb is not None:
                     extra_vb.autoRange()
@@ -415,6 +420,8 @@ class LogInspectorModule(BaseModule):
             if axis is None:
                 self._propagate_y_change(y_before, _main_vb.viewRange()[1])
         _main_vb.wheelEvent = _patched_wheel
+
+        _main_vb.sigYRangeChanged.connect(self._on_main_y_changed)
 
         self._plot.scene().sigMouseClicked.connect(self._on_graph_click)
         # Left-drag on the plot defines the selection region directly.
@@ -782,13 +789,8 @@ const WAYPOINTS={json.dumps(waypoints_js)};
         if len(self._plot_items) == 0:
             # First curve — use the main left axis
             curve = self._plot.plot(t_s, vals, pen=pg.mkPen(color=color, width=1.5), name=name)
-            left = self._plot.getAxis('left')
-            left.setPen(pg.mkPen(color=color))
-            try:
-                left.setTextPen(pg.mkPen(color=color))
-            except AttributeError:
-                pass
             self._plot_items[key] = (curve, color, None, None)
+            self._refresh_left_axis()
         else:
             # Additional curves — create a new ViewBox + right AxisItem
             pi  = self._plot.plotItem
@@ -812,6 +814,8 @@ const WAYPOINTS={json.dumps(waypoints_js)};
             self._plot_items[key] = (curve, color, vb, ax)
             self._rebuild_extra_axes()
 
+        if self._scale_match:
+            self._apply_scale_match()
         item.setForeground(0, QColor(color))
         self._update_stats_box()
 
@@ -830,10 +834,15 @@ const WAYPOINTS={json.dumps(waypoints_js)};
             except AttributeError:
                 pass
         else:
-            self._plot.plotItem.layout.removeItem(ax)
+            if getattr(ax, '_in_layout', False):
+                self._plot.plotItem.layout.removeItem(ax)
+                ax._in_layout = False
             self._plot.plotItem.scene().removeItem(vb)
             self._legend.removeItem(curve)
         self._rebuild_extra_axes()
+        if self._scale_match:
+            self._apply_scale_match()
+        self._refresh_left_axis()
         item.setForeground(0, QColor(COLORS['text_secondary']))
         self._update_stats_box()
 
@@ -841,13 +850,22 @@ const WAYPOINTS={json.dumps(waypoints_js)};
         """Reposition all extra left-side axes in the plotItem layout after add/remove."""
         pi = self._plot.plotItem
         for _, (_, _, vb, ax) in self._plot_items.items():
-            if ax is not None:
+            if ax is not None and getattr(ax, '_in_layout', False):
                 pi.layout.removeItem(ax)
+                ax._in_layout = False
         col = _MAIN_LEFT_COL - 1  # 4, 3, 2, 1, 0 — directly left of main axis
         for _, (_, _, vb, ax) in self._plot_items.items():
-            if ax is not None:
-                pi.layout.addItem(ax, 2, col)
-                col -= 1
+            if ax is None:
+                continue
+            if self._scale_match:
+                # All curves share the main left axis — per-curve axes would
+                # just repeat the same numbers.
+                ax.setVisible(False)
+                continue
+            ax.setVisible(True)
+            pi.layout.addItem(ax, 2, col)
+            ax._in_layout = True
+            col -= 1
         self._update_extra_views()
 
     def _update_extra_views(self):
@@ -860,6 +878,9 @@ const WAYPOINTS={json.dumps(waypoints_js)};
 
     def _propagate_y_change(self, y_before, y_after):
         """Apply the same proportional Y shift/zoom to all extra ViewBoxes."""
+        if self._scale_match:
+            # Matched mode keeps every ViewBox on the main Y range instead.
+            return
         span_before = y_before[1] - y_before[0]
         if span_before == 0:
             return
@@ -883,9 +904,10 @@ const WAYPOINTS={json.dumps(waypoints_js)};
             return
         pi = self._plot.plotItem
         for _, (_, _, vb, ax) in self._plot_items.items():
-            if ax is not None:
+            if ax is not None and getattr(ax, '_in_layout', False):
                 try:
                     pi.layout.removeItem(ax)
+                    ax._in_layout = False
                 except Exception:
                     pass
             if vb is not None:
@@ -933,6 +955,24 @@ const WAYPOINTS={json.dumps(waypoints_js)};
         row.addWidget(_btn("⇔  Fit Selection",  self._on_fit_selection))
         row.addWidget(_btn("↕  Auto Y",          self._on_auto_y))
 
+        self._match_btn = QPushButton("⇕  Match Scale")
+        self._match_btn.setCheckable(True)
+        self._match_btn.setChecked(self._scale_match)
+        self._match_btn.setFixedHeight(20)
+        self._match_btn.setToolTip(
+            "Put every plotted channel on one shared Y scale so curves of the "
+            "same kind can be compared directly."
+        )
+        self._match_btn.setStyleSheet(
+            btn_style
+            + f"QPushButton:checked {{ background:{COLORS['border_active']}22;"
+              f" color:{COLORS['border_active']};"
+              f" border-color:{COLORS['border_active']}; }}"
+        )
+        self._match_btn.setCursor(Qt.PointingHandCursor)
+        self._match_btn.toggled.connect(self._on_toggle_scale_match)
+        row.addWidget(self._match_btn)
+
         sep = QWidget()
         sep.setFixedWidth(1)
         sep.setStyleSheet(f"background:{COLORS['border']};")
@@ -959,6 +999,10 @@ const WAYPOINTS={json.dumps(waypoints_js)};
             return
         vb = self._plot.plotItem.vb
         x_range = vb.viewRange()[0]
+        if self._scale_match:
+            self._apply_scale_match()
+            vb.setXRange(x_range[0], x_range[1], padding=0)
+            return
         vb.autoRange()
         vb.setXRange(x_range[0], x_range[1], padding=0)
         for _, (_, _, extra_vb, _) in self._plot_items.items():
@@ -966,6 +1010,92 @@ const WAYPOINTS={json.dumps(waypoints_js)};
                 xr = extra_vb.viewRange()[0]
                 extra_vb.autoRange()
                 extra_vb.setXRange(xr[0], xr[1], padding=0)
+
+    # ── Shared Y scale ──────────────────────────────────────
+
+    def _on_toggle_scale_match(self, checked: bool):
+        """Toggle a single shared Y scale for every plotted channel."""
+        self._scale_match = checked
+        if self._plot is None:
+            return
+        if checked:
+            self._apply_scale_match()
+        else:
+            main_vb = self._plot.plotItem.vb
+            x_range = main_vb.viewRange()[0]
+            main_vb.autoRange()
+            main_vb.setXRange(x_range[0], x_range[1], padding=0)
+            for _, (_, _, vb, _) in self._plot_items.items():
+                if vb is None:
+                    continue
+                vb.enableAutoRange(axis=vb.YAxis, enable=True)
+                vb.autoRange()
+                vb.setXRange(x_range[0], x_range[1], padding=0)
+        self._rebuild_extra_axes()
+        self._refresh_left_axis()
+
+    def _common_y_range(self):
+        """Union of every curve's Y extent over the visible X range."""
+        if self._plot is None or not self._plot_items:
+            return None
+        x0, x1 = self._plot.plotItem.vb.viewRange()[0]
+        lo = hi = None
+        for _, (curve, _, _, _) in self._plot_items.items():
+            xd, yd = curve.getData()
+            if xd is None or len(xd) == 0:
+                continue
+            mask = (xd >= x0) & (xd <= x1)
+            seg  = yd[mask] if mask.any() else yd
+            seg  = seg[np.isfinite(seg)]
+            if len(seg) == 0:
+                continue
+            s_lo, s_hi = float(seg.min()), float(seg.max())
+            lo = s_lo if lo is None else min(lo, s_lo)
+            hi = s_hi if hi is None else max(hi, s_hi)
+        if lo is None:
+            return None
+        pad = (hi - lo) * 0.05 if hi > lo else (abs(hi) * 0.05 or 1.0)
+        return lo - pad, hi + pad
+
+    def _apply_scale_match(self):
+        """Fit the main Y range to all curves; extras follow via the signal."""
+        rng = self._common_y_range()
+        if rng is None:
+            return
+        self._plot.plotItem.vb.setYRange(rng[0], rng[1], padding=0)
+        self._sync_matched_y()
+
+    def _on_main_y_changed(self, *_args):
+        if self._scale_match:
+            self._sync_matched_y()
+
+    def _sync_matched_y(self):
+        """Pin every extra ViewBox to the main ViewBox's Y range."""
+        if self._plot is None:
+            return
+        y0, y1 = self._plot.plotItem.vb.viewRange()[1]
+        for _, (_, _, vb, _) in self._plot_items.items():
+            if vb is None:
+                continue
+            vb.enableAutoRange(axis=vb.YAxis, enable=False)
+            vb.setYRange(y0, y1, padding=0)
+
+    def _refresh_left_axis(self):
+        """Main left axis is per-curve normally, neutral when it is shared."""
+        if self._plot is None:
+            return
+        color = COLORS['text_secondary']
+        if not self._scale_match:
+            for _, (_, c_color, vb, _) in self._plot_items.items():
+                if vb is None:
+                    color = c_color
+                    break
+        left = self._plot.getAxis('left')
+        left.setPen(pg.mkPen(color=color))
+        try:
+            left.setTextPen(pg.mkPen(color=color))
+        except AttributeError:
+            pass
 
     def _on_clear_selection(self):
         if self._plot is None or self._region is None or self._log_data is None:

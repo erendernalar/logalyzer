@@ -22,6 +22,7 @@
 | **Log Inspector** | Interactive time-series graphs (attitude, altitude, battery, vibration, RC output) with a synchronized 3D flight path map |
 | **3D Flight Review** | Replay flight over 3D terrain with a full FPV HUD — heading tape, speed/altitude tapes, pitch ladder, roll arc |
 | **Vibration Analyzer** | IMU vibration health bars and FFT frequency spectrum per axis |
+| **Tracking Analyzer** | Scores desired-vs-actual tracking per axis for tuning — MAE, RMSE, P95 error, response lag and step overshoot |
 | **Max Range Analyzer** | Estimates maximum one-way / return-to-launch range from cruise speed and battery data; plotted on an interactive map |
 | **Transition Analyzer** | VTOL transition event table with durations, color-coded flight path (Q-mode / forward flight / transition phases) |
 | **Total Flight Time** | Scans a folder of logs and calculates cumulative airtime across all flights |
@@ -85,6 +86,20 @@ python main.py
 - Drag the timeline slider to jump to any point in the flight.
 - Use **+** / **−** to scale the aircraft model size.
 
+### Tracking Analyzer
+
+- Scores how closely each axis follows its setpoint, from `ATT` (attitude) and `RATE` (body rates).
+- Metrics per axis: **MAE** (overall tracking error), **RMSE** (weights big misses harder), **P95 |e|**
+  (how bad the hard parts get, spike-resistant), **Max |e|**, **Norm MAE** (error ÷ mean |desired|,
+  ignoring the near-zero-setpoint stretches, so flights of different intensity compare), **Lag**
+  (cross-correlation delay), **r @ lag** and **Overshoot** after fast setpoint steps.
+  Mean signed error appears only as a **Bias** trim hint — on its own it cancels out and says nothing.
+- **Window** selects what is scored: armed intervals only, the full log, or drag the shaded region on
+  the plot to score one stretch.
+- Click a table row to plot that axis: desired vs actual on top, `e(t)` below with ±MAE and ±P95 bands.
+- Axes marked **⚠** are excluded from the verdict — actual barely correlates with desired there, so
+  that setpoint was never a tracked demand (ArduPlane's `DesYaw` is the usual case).
+
 ### Max Range Analyzer
 
 - After loading a log the module shows the estimated range on an interactive map as a single circle.
@@ -119,6 +134,7 @@ logalyzer/
 │   │   ├── log_inspector/
 │   │   ├── flight_review_3d/
 │   │   ├── vibration_analyzer/
+│   │   ├── tracking_analyzer/
 │   │   ├── max_range_analyzer/
 │   │   ├── transition_analyzer/
 │   │   └── total_flight_time/

@@ -72,6 +72,10 @@ class LogData:
     att: dict = field(default_factory=dict)
     # TimeUS, DesRoll, Roll, DesPitch, Pitch, DesYaw, Yaw
 
+    rate: dict = field(default_factory=dict)
+    # TimeUS, RDes, R, ROut, PDes, P, POut, YDes, Y, YOut, ADes, A, AOut
+    # Rate-controller desired vs achieved body rates, deg/s
+
     bat: dict = field(default_factory=dict)
     # TimeUS, Inst, Volt, VoltR, Curr, CurrTot, EnrgTot, RemPct
 
