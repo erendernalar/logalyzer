@@ -11,7 +11,26 @@
   <img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python">
   <img src="https://img.shields.io/badge/PyQt5-5.15%2B-green" alt="PyQt5">
   <img src="https://img.shields.io/badge/license-NC--OSL-orange" alt="License">
+  <a href="https://github.com/erendernalar/logalyzer/releases/latest"><img src="https://img.shields.io/github/v/release/erendernalar/logalyzer" alt="Latest release"></a>
 </p>
+
+<p align="center">
+  <a href="https://github.com/erendernalar/logalyzer/releases/latest">Download for Windows</a> — no Python install required
+</p>
+
+---
+
+## Screenshots
+
+| | |
+|---|---|
+| **Log Inspector** — synchronized time-series graphs + 3D flight path map | ![Log Inspector](docs/images/log-inspector.png) |
+| **3D Flight Review** — free-camera terrain replay | ![3D Flight Review](docs/images/3d-flight-review.png) |
+| **3D Flight Review** — FPV HUD mode | ![3D Flight Review FPV](docs/images/3d-flight-review-fpv.png) |
+| **Max Range Analyzer** — estimated range plotted on the map | ![Max Range Analyzer](docs/images/max-range-analyzer.png) |
+| **Transition Analyzer** — VTOL transition events + color-coded path | ![Transition Analyzer](docs/images/transition-analyzer.png) |
+| **Tracking Analyzer** — desired vs actual tracking error per axis | ![Tracking Analyzer](docs/images/tracking-analyzer.png) |
+| **Vibration Analyzer** — IMU vibration health + FFT spectrum | ![Vibration Analyzer](docs/images/vibration-analyzer.png) |
 
 ---
 
@@ -25,6 +44,7 @@
 | **Tracking Analyzer** | Scores desired-vs-actual tracking per axis for tuning — MAE, RMSE, P95 error, response lag and step overshoot |
 | **Max Range Analyzer** | Estimates maximum one-way / return-to-launch range from cruise speed and battery data; plotted on an interactive map |
 | **Transition Analyzer** | VTOL transition event table with durations, color-coded flight path (Q-mode / forward flight / transition phases) |
+| **VIO Analyzer** | Compares visual-inertial odometry (VIO) path against the GPS flight path on a synchronized 3D map |
 | **Total Flight Time** | Scans a folder of logs and calculates cumulative airtime across all flights |
 
 ---
@@ -48,7 +68,7 @@ sudo apt-get install python3-pyqt5.qtwebengine
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-username/logalyzer.git
+git clone https://github.com/erendernalar/logalyzer.git
 cd logalyzer
 
 # 2. Create and activate a virtual environment (recommended)
@@ -110,6 +130,10 @@ python main.py
 
 *(VTOL aircraft only)* — Shows a table of every Q↔Fixed-wing transition with timestamps and duration, plus a color-coded flight path on the map (green = Q-mode, blue = fixed-wing, red = forward transition, orange = back transition).
 
+### VIO Analyzer
+
+*(requires a VIO/visual-odometry source in the log)* — Overlays the estimated VIO path against the GPS track on the 3D map so drift and divergence between the two are easy to spot.
+
 ### Total Flight Time
 
 - Click **Select Folder** and choose a directory that contains `.BIN` or `.log` files.
@@ -137,6 +161,7 @@ logalyzer/
 │   │   ├── tracking_analyzer/
 │   │   ├── max_range_analyzer/
 │   │   ├── transition_analyzer/
+│   │   ├── vio_analyzer/
 │   │   └── total_flight_time/
 │   ├── ui/                         # Main window and shared UI widgets
 │   └── theme/                      # Dark theme stylesheet and color palette
