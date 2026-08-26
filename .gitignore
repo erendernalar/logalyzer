@@ -42,6 +42,9 @@ logs/
 # Temporary HTML files generated at runtime
 app/assets/_*.html
 
+# Downloaded map tile cache (terrain + satellite)
+app/assets/tile_cache/
+
 # Test / coverage
 .pytest_cache/
 .coverage

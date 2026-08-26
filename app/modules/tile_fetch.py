@@ -6,14 +6,76 @@ Provides:
   - make_loading_html(title)                    — progress-bar loading screen
   - HtmlBuilder                                 — QThread that builds and writes HTML
 """
+import os
 import math
 import base64
+import hashlib
+import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from app.theme.style import COLORS
+
+
+# ── Tile cache (shared by every module) ────────────────────────────────────────
+# All 3-D views fetch tiles for the same flight track, so caching here — the
+# single choke point every module already calls through — dedupes downloads
+# across module switches (in-memory) and across app runs (on-disk).
+
+_DISK_CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'assets', 'tile_cache'))
+_MEM_CACHE = {}
+_MEM_CACHE_LOCK = threading.Lock()
+
+# Opening many different logs (different flight locations) would otherwise
+# grow this cache forever, so it's bounded with LRU eviction: once total size
+# exceeds the cap, oldest-accessed tiles are deleted until back at the target.
+_MAX_CACHE_BYTES   = 500 * 1024 * 1024        # hard cap
+_EVICT_TARGET_BYTES = int(_MAX_CACHE_BYTES * 0.8)  # evict down to this when over cap
+_EVICT_CHECK_BYTES  = 20 * 1024 * 1024        # re-scan after this many new bytes written
+
+_evict_lock = threading.Lock()
+_bytes_since_check = 0
+
+
+def _disk_cache_path(url):
+    digest = hashlib.md5(url.encode('utf-8')).hexdigest()
+    return os.path.join(_DISK_CACHE_DIR, digest[:2], digest + '.png')
+
+
+def _evict_lru_if_needed():
+    """Throttled size-capped LRU eviction, checked every _EVICT_CHECK_BYTES written."""
+    global _bytes_since_check
+    with _evict_lock:
+        if _bytes_since_check < _EVICT_CHECK_BYTES:
+            return
+        _bytes_since_check = 0
+
+    entries = []
+    total = 0
+    for root, _dirs, files in os.walk(_DISK_CACHE_DIR):
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            entries.append((st.st_atime, st.st_size, path))
+            total += st.st_size
+
+    if total <= _MAX_CACHE_BYTES:
+        return
+
+    entries.sort(key=lambda e: e[0])  # oldest-accessed first
+    for _atime, size, path in entries:
+        if total <= _EVICT_TARGET_BYTES:
+            break
+        try:
+            os.remove(path)
+            total -= size
+        except OSError:
+            pass
 
 
 # ── Geo helpers ───────────────────────────────────────────────────────────────
@@ -37,12 +99,42 @@ def tile_bounds(tx, ty, zoom):
 
 
 def fetch_b64(url):
-    try:
-        req  = urllib.request.Request(url, headers={'User-Agent': 'Logalyzer/1.0'})
-        data = urllib.request.urlopen(req, timeout=8).read()
-        return 'data:image/png;base64,' + base64.b64encode(data).decode()
-    except Exception:
-        return None
+    with _MEM_CACHE_LOCK:
+        cached = _MEM_CACHE.get(url)
+    if cached is not None:
+        return cached
+
+    disk_path = _disk_cache_path(url)
+    data = None
+    if os.path.exists(disk_path):
+        try:
+            with open(disk_path, 'rb') as f:
+                data = f.read()
+            os.utime(disk_path, None)  # mark as recently used, protects it from LRU eviction
+        except OSError:
+            data = None
+
+    if data is None:
+        try:
+            req  = urllib.request.Request(url, headers={'User-Agent': 'Logalyzer/1.0'})
+            data = urllib.request.urlopen(req, timeout=8).read()
+        except Exception:
+            return None
+        try:
+            os.makedirs(os.path.dirname(disk_path), exist_ok=True)
+            with open(disk_path, 'wb') as f:
+                f.write(data)
+            global _bytes_since_check
+            with _evict_lock:
+                _bytes_since_check += len(data)
+            _evict_lru_if_needed()
+        except OSError:
+            pass
+
+    result = 'data:image/png;base64,' + base64.b64encode(data).decode()
+    with _MEM_CACHE_LOCK:
+        _MEM_CACHE[url] = result
+    return result
 
 
 # ── Tile fetcher ──────────────────────────────────────────────────────────────
