@@ -7,6 +7,7 @@ Provides:
   - HtmlBuilder                                 — QThread that builds and writes HTML
 """
 import os
+import sys
 import math
 import base64
 import hashlib
@@ -23,8 +24,25 @@ from app.theme.style import COLORS
 # All 3-D views fetch tiles for the same flight track, so caching here — the
 # single choke point every module already calls through — dedupes downloads
 # across module switches (in-memory) and across app runs (on-disk).
+#
+# NOTE: this must NOT be derived from __file__. In the PyInstaller onefile
+# build, __file__ resolves inside the per-launch extraction temp dir
+# (sys._MEIPASS), which is wiped when the exe exits — a cache stored there
+# would silently reset on every launch. A real OS user-cache directory is
+# stable across both the frozen exe and `python main.py` dev runs.
 
-_DISK_CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'assets', 'tile_cache'))
+def _default_cache_dir():
+    app_name = 'Logalyzer'
+    if sys.platform == 'win32':
+        base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    elif sys.platform == 'darwin':
+        base = os.path.expanduser('~/Library/Caches')
+    else:
+        base = os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache')
+    return os.path.join(base, app_name, 'tile_cache')
+
+
+_DISK_CACHE_DIR = _default_cache_dir()
 _MEM_CACHE = {}
 _MEM_CACHE_LOCK = threading.Lock()
 
